@@ -1,6 +1,67 @@
 [package]
 name = "white-shark"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+description = "A trading client for Kalshi and Binance markets"
+
+[lib]
+name = "white_shark"
+path = "src/lib.rs"
+
+[[bin]]
+name = "white-shark"
+path = "src/main.rs"
 
 [dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full", "sync", "macros", "rt-multi-thread"] }
+
+# WebSocket
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-native-tls = "0.3"
+native-tls = "0.2"
+futures-util = "0.3"
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json", "native-tls"] }
+http = "1.0"
+url = "2.5"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Binary encoding
+byteorder = "1.5"
+
+# Cryptography (for Kalshi auth)
+rsa = { version = "0.9", features = ["pem", "std", "sha2"] }
+rand = "0.8"
+pem = "3.0"
+sha2 = "0.10"
+base64 = "0.21"
+
+# Time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Configuration
+dotenv = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Async traits
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
