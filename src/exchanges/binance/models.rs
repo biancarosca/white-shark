@@ -9,7 +9,7 @@ pub enum BinanceStream {
     Trade,
     BestBidAsk,
     Depth,
-    Depth20,
+    DepthPartial(u16), 
     Kline(KlineInterval),
 }
 
@@ -20,7 +20,7 @@ impl BinanceStream {
             BinanceStream::Trade => format!("{}@trade", symbol_lower),
             BinanceStream::BestBidAsk => format!("{}@bestBidAsk", symbol_lower),
             BinanceStream::Depth => format!("{}@depth", symbol_lower),
-            BinanceStream::Depth20 => format!("{}@depth20", symbol_lower),
+            BinanceStream::DepthPartial(level) => format!("{}@depth{}", symbol_lower, level),
             BinanceStream::Kline(interval) => {
                 format!("{}@kline_{}", symbol_lower, interval.as_str())
             }

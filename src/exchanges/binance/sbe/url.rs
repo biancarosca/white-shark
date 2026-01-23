@@ -16,5 +16,5 @@ pub fn build_sbe_combined_url(streams: &[String]) -> String {
         BINANCE_SBE_WS_URL,
         streams_param
     )
-}
+} 
 

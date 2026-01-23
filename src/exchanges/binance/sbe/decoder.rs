@@ -1,3 +1,6 @@
+use tracing::warn;
+use tracing::error;
+
 use crate::error::{Error, Result};
 
 use super::messages::*;
@@ -27,7 +30,7 @@ impl SbeDecoder {
         let header = MessageHeader::decode(data)?;
 
         if header.schema_id != self.expected_schema_id {
-            tracing::debug!(
+            warn!(
                 "Schema ID from server: {} (expected {}), Version: {}",
                 header.schema_id,
                 self.expected_schema_id,
@@ -35,14 +38,14 @@ impl SbeDecoder {
             );
         }
 
-        // Log header details for debugging
-        tracing::debug!(
-            "SBE Header: block_length={}, template_id={}, schema_id={}, version={}",
-            header.block_length,
-            header.template_id,
-            header.schema_id,
-            header.version
-        );
+        if header.version != self.expected_version {
+            warn!(
+                "Version from server: {} (expected {}), Schema ID: {}",
+                header.version,
+                self.expected_version,
+                header.schema_id
+            );
+        }
 
         let body = &data[MessageHeader::SIZE..];
 
@@ -51,7 +54,7 @@ impl SbeDecoder {
                 TradeStreamEvent::decode(body)
                     .map(SbeMessage::Trade)
                     .map_err(|e| {
-                        tracing::error!("Failed to decode Trade message (body_len={}): {}", body.len(), e);
+                        error!("Failed to decode Trade message (body_len={}): {}", body.len(), e);
                         e
                     })
             }
@@ -59,7 +62,7 @@ impl SbeDecoder {
                 BestBidAskStreamEvent::decode(body)
                     .map(SbeMessage::BestBidAsk)
                     .map_err(|e| {
-                        tracing::error!("Failed to decode BestBidAsk message (body_len={}): {}", body.len(), e);
+                        error!("Failed to decode BestBidAsk message (body_len={}): {}", body.len(), e);
                         e
                     })
             }
@@ -80,8 +83,7 @@ impl SbeDecoder {
                     })
             }
             SbeMessageType::Unknown(id) => {
-                // Log the raw message for debugging
-                tracing::warn!(
+                error!(
                     "Unknown template ID: {} (schema_id={}, version={}, block_length={}, body_len={})",
                     id,
                     header.schema_id,

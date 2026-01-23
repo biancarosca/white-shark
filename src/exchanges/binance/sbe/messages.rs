@@ -2,6 +2,7 @@ use std::io::{Cursor, Read};
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use chrono::{DateTime, Utc};
+use tracing::info;
 
 use crate::error::{Error, Result};
 use crate::exchanges::PriceUpdate;
@@ -68,54 +69,43 @@ impl TradeStreamEvent {
         let mut cursor = Cursor::new(data);
         let data_len = data.len();
 
-        // eventTime (i64) = 8 bytes
         let event_time_micros = cursor.read_i64::<LittleEndian>()?;
-        
-        // transactTime (i64) = 8 bytes
         let transact_time_micros = cursor.read_i64::<LittleEndian>()?;
-        
-        // priceExponent (i8) = 1 byte
         let price_exponent = cursor.read_i8()?;
-        
-        // qtyExponent (i8) = 1 byte
         let qty_exponent = cursor.read_i8()?;
         
         // trades group (groupSizeEncoding) = 2 bytes (block_length) + 4 bytes (numInGroup) = 6 bytes
         let (block_length, num_trades) = read_group_size(&mut cursor)?;
         
-        tracing::debug!(
-            "TradeStreamEvent: block_length={}, num_trades={}, remaining_bytes={}",
-            block_length,
-            num_trades,
-            data_len - cursor.position() as usize
-        );
-        
-        // Read exactly block_length bytes for each trade entry
-        let mut trades = Vec::with_capacity(num_trades as usize);
-        
-        for trade_idx in 0..num_trades {
+
+        // We only need the last trade's price (most recent) for last_price
+        // If there's only 1 trade, we'll parse it. If multiple, we'll skip to the last one.
+        let last_trade = if num_trades > 0 {
+            // If multiple trades, skip to the last one (most recent price)
+            if num_trades > 1 {
+                let skip_bytes = (num_trades - 1) as usize * block_length as usize;
+                let current_pos = cursor.position() as usize;
+                if current_pos + skip_bytes <= data_len {
+                    cursor.set_position((current_pos + skip_bytes) as u64);
+                } else {
+                    return Err(Error::SbeDecode(format!(
+                        "Not enough data to skip to last trade: need {} bytes, have {} bytes",
+                        skip_bytes, data_len - current_pos
+                    )));
+                }
+            }
+            
             let position_before = cursor.position() as usize;
             let remaining = data_len - position_before;
             
             if remaining < block_length as usize {
                 return Err(Error::SbeDecode(format!(
-                    "Not enough data for trade {}: need {} bytes, have {} bytes",
-                    trade_idx, block_length, remaining
+                    "Not enough data for last trade: need {} bytes, have {} bytes",
+                    block_length, remaining
                 )));
             }
             
-            // Read the trade entry (exactly block_length bytes)
-            let entry_start = position_before;
-            let entry_end = entry_start + block_length as usize;
-            
-            if entry_end > data_len {
-                return Err(Error::SbeDecode(format!(
-                    "Trade entry {} would exceed buffer: need {} bytes, have {} bytes",
-                    trade_idx, entry_end, data_len
-                )));
-            }
-            
-            // Parse fields from this entry
+            // Parse the last trade entry (most recent)
             // id (i64) = 8 bytes
             let id = cursor.read_i64::<LittleEndian>()?;
             
@@ -130,12 +120,10 @@ impl TradeStreamEvent {
             // isBuyerMaker (boolEnum = u8) = 1 byte
             let is_buyer_maker = cursor.read_u8()? != 0;
             
-            // isBestMatch (boolEnum, constant True) = 1 byte
-            // However, if block_length is 25 instead of 26, this field is omitted (presence="constant")
+            // isBestMatch (boolEnum, constant True) = 1 byte (may be omitted)
             let bytes_so_far = cursor.position() as usize - position_before;
             let remaining_in_block = block_length as usize - bytes_so_far;
             
-            // Only read isBestMatch if there's a byte for it
             if remaining_in_block >= 1 {
                 let _is_best_match = cursor.read_u8()?;
             }
@@ -145,24 +133,20 @@ impl TradeStreamEvent {
             let bytes_read = position_after - position_before;
             
             if bytes_read < block_length as usize {
-                let padding = (block_length as usize) - bytes_read;
-                if padding > 0 {
-                    cursor.set_position((position_before + block_length as usize) as u64);
-                }
-            } else if bytes_read > block_length as usize {
-                return Err(Error::SbeDecode(format!(
-                    "Read more than block_length: read {} bytes, expected {}",
-                    bytes_read, block_length
-                )));
+                cursor.set_position((position_before + block_length as usize) as u64);
             }
             
-            trades.push(Trade {
+            Some(Trade {
                 id,
                 price,
                 qty,
                 is_buyer_maker,
-            });
-        }
+            })
+        } else {
+            None
+        };
+        
+        let trades = last_trade.into_iter().collect();
         
         // symbol (varString8) - check we have enough data
         let remaining = data_len - cursor.position() as usize;
@@ -183,19 +167,24 @@ impl TradeStreamEvent {
         })
     }
 
-    pub fn to_price_update(&self) -> PriceUpdate {
-        // Use the first trade's price as last_price
-        let last_price = self.trades.first().map(|t| t.price);
+    // pub fn to_price_update(&self) -> PriceUpdate {
+    //     // Use the last trade's price (most recent) as last_price
+    //     let last_price = self.trades.last().map(|t| t.price);
         
-        PriceUpdate {
-            exchange: "binance".to_string(),
-            symbol: self.symbol.clone(),
-            timestamp: self.event_time,
-            bid: None,
-            ask: None,
-            last_price,
-            volume_24h: None,
-        }
+    //     PriceUpdate {
+    //         exchange: "binance".to_string(),
+    //         symbol: self.symbol.clone(),
+    //         timestamp: self.event_time,
+    //         bid: None,
+    //         ask: None,
+    //         last_price,
+    //         volume_24h: None,
+    //     }
+    // }
+
+    pub fn print_update(&self) {
+        let last_price = self.trades.last().map(|t| t.price).unwrap_or(0.0);
+        info!("⚡ price = {}\n", last_price);
     }
 }
 
@@ -214,35 +203,23 @@ impl BestBidAskStreamEvent {
     pub fn decode(data: &[u8]) -> Result<Self> {
         let mut cursor = Cursor::new(data);
 
-        // eventTime (i64)
         let event_time_micros = cursor.read_i64::<LittleEndian>()?;
-        
-        // bookUpdateId (i64)
         let book_update_id = cursor.read_i64::<LittleEndian>()?;
-        
-        // priceExponent (i8)
         let price_exponent = cursor.read_i8()?;
-        
-        // qtyExponent (i8)
         let qty_exponent = cursor.read_i8()?;
         
-        // bidPrice (mantissa64 with priceExponent)
         let bid_price_mantissa = cursor.read_i64::<LittleEndian>()?;
         let bid_price = decode_decimal(bid_price_mantissa, price_exponent);
         
-        // bidQty (mantissa64 with qtyExponent)
         let bid_qty_mantissa = cursor.read_i64::<LittleEndian>()?;
         let bid_qty = decode_decimal(bid_qty_mantissa, qty_exponent);
         
-        // askPrice (mantissa64 with priceExponent)
         let ask_price_mantissa = cursor.read_i64::<LittleEndian>()?;
         let ask_price = decode_decimal(ask_price_mantissa, price_exponent);
         
-        // askQty (mantissa64 with qtyExponent)
         let ask_qty_mantissa = cursor.read_i64::<LittleEndian>()?;
         let ask_qty = decode_decimal(ask_qty_mantissa, qty_exponent);
         
-        // symbol (varString8)
         let symbol = read_var_string8(&mut cursor)?;
 
         Ok(Self {
@@ -256,16 +233,22 @@ impl BestBidAskStreamEvent {
         })
     }
 
-    pub fn to_price_update(&self) -> PriceUpdate {
-        PriceUpdate {
-            exchange: "binance".to_string(),
-            symbol: self.symbol.clone(),
-            timestamp: self.event_time,
-            bid: Some(self.bid_price),
-            ask: Some(self.ask_price),
-            last_price: None,
-            volume_24h: None,
-        }
+    // pub fn to_price_update(&self) -> PriceUpdate {
+    //     let last_price = (self.bid_price * self.bid_qty + self.ask_price * self.ask_qty) / (self.bid_qty + self.ask_qty);
+    //     PriceUpdate {
+    //         exchange: "binance".to_string(),
+    //         symbol: self.symbol.clone(),
+    //         timestamp: self.event_time,
+    //         bid: Some(self.bid_price),
+    //         ask: Some(self.ask_price),
+    //         last_price: Some(last_price),
+    //         volume_24h: None,
+    //     }
+    // }
+
+    pub fn print_update(&self) {
+        let last_price = (self.bid_price * self.ask_qty + self.ask_price * self.bid_qty) / (self.bid_qty + self.ask_qty);
+        info!("⚖️ bid = {}, ask = {}, last_price = {:.3}\n", self.bid_price, self.ask_price, last_price);
     }
 }
 
@@ -339,6 +322,29 @@ impl DepthSnapshotStreamEvent {
             symbol,
         })
     }
+
+    pub fn print_update(&self) {
+        let top_5_bids_total_qty = self.bids.iter().take(5).map(|b| b.qty).sum::<f64>();
+        let top_5_asks_total_qty = self.asks.iter().take(5).map(|a| a.qty).sum::<f64>();
+
+        if top_5_asks_total_qty < 0.0 {
+            return;
+        }
+
+        let imbalance_top_5 = top_5_bids_total_qty / top_5_asks_total_qty;
+
+        let top_10_bids_total_qty = self.bids.iter().take(10).map(|b| b.qty).sum::<f64>();
+        let top_10_asks_total_qty = self.asks.iter().take(10).map(|a| a.qty).sum::<f64>();
+        let imbalance_top_10 = top_10_bids_total_qty / top_10_asks_total_qty;
+
+        let all_bids_total_qty = self.bids.iter().map(|b| b.qty).sum::<f64>();
+        let all_asks_total_qty = self.asks.iter().map(|a| a.qty).sum::<f64>();
+        let imbalance_all = all_bids_total_qty / all_asks_total_qty;
+
+        info!("📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3}", top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5);
+        info!("📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3}", top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10);
+        info!("📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3}\n", all_bids_total_qty, all_asks_total_qty, imbalance_all);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -407,28 +413,32 @@ pub enum SbeMessage {
 }
 
 impl SbeMessage {
-    pub fn to_price_update(&self) -> PriceUpdate {
+    pub fn print_update(&self) {
         match self {
-            SbeMessage::Trade(e) => e.to_price_update(),
-            SbeMessage::BestBidAsk(e) => e.to_price_update(),
-            SbeMessage::DepthDiff(e) => PriceUpdate {
-                exchange: "binance".to_string(),
-                symbol: e.symbol.clone(),
-                timestamp: e.event_time,
-                bid: e.bids.first().map(|b| b.price),
-                ask: e.asks.first().map(|a| a.price),
-                last_price: None,
-                volume_24h: None,
+            SbeMessage::Trade(e) => e.print_update(),
+            SbeMessage::BestBidAsk(e) => e.print_update(),
+            SbeMessage::DepthDiff(e) => {
+                ()
             },
-            SbeMessage::DepthSnapshot(e) => PriceUpdate {
-                exchange: "binance".to_string(),
-                symbol: e.symbol.clone(),
-                timestamp: e.event_time,
-                bid: e.bids.first().map(|b| b.price),
-                ask: e.asks.first().map(|a| a.price),
-                last_price: None,
-                volume_24h: None,
-            },
+            SbeMessage::DepthSnapshot(e) => e.print_update(),
+            // SbeMessage::DepthDiff(e) => PriceUpdate {
+            //     exchange: "binance".to_string(),
+            //     symbol: e.symbol.clone(),
+            //     timestamp: e.event_time,
+            //     bid: e.bids.first().map(|b| b.price),
+            //     ask: e.asks.first().map(|a| a.price),
+            //     last_price: None,
+            //     volume_24h: None,
+            // },
+            // SbeMessage::DepthSnapshot(e) => PriceUpdate {
+            //     exchange: "binance".to_string(),
+            //     symbol: e.symbol.clone(),
+            //     timestamp: e.event_time,
+            //     bid: e.bids.first().map(|b| b.price),
+            //     ask: e.asks.first().map(|a| a.price),
+            //     last_price: None,
+            //     volume_24h: None,
+            // },
         }
     }
 

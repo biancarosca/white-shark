@@ -5,10 +5,10 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
 
-pub const SCHEMA_ID: u16 = 1; // From stream_1_0.xml schema
+// From stream_1_0.xml schema
+pub const SCHEMA_ID: u16 = 1;
 pub const SCHEMA_VERSION: u16 = 0;
 
-// Template IDs from stream_1_0.xml schema
 pub const TEMPLATE_TRADES_STREAM: u16 = 10000;
 pub const TEMPLATE_BEST_BID_ASK_STREAM: u16 = 10001;
 pub const TEMPLATE_DEPTH_SNAPSHOT_STREAM: u16 = 10002;

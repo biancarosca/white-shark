@@ -57,13 +57,13 @@ impl BinanceClient {
 
     fn ws_url(&self, symbols: &[String]) -> String {
         if self.use_sbe {
-            // Build streams list for SBE
             let streams: Vec<String> = symbols
                 .iter()
                 .flat_map(|s| {
                     vec![
                         BinanceStream::Trade.stream_name(s),
                         BinanceStream::BestBidAsk.stream_name(s),
+                        BinanceStream::DepthPartial(20).stream_name(s),
                     ]
                 })
                 .collect();
@@ -81,15 +81,17 @@ impl BinanceClient {
         let url = url::Url::parse(&url_str)
             .map_err(|e| Error::WebSocket(format!("Invalid URL: {}", e)))?;
 
-        // SBE requires API key and manual connection with headers
         if self.use_sbe {
-            // API key is required for SBE according to Binance docs
             let api_key = self.config.api_key.as_ref()
-                .ok_or_else(|| Error::WebSocket("BINANCE_API_KEY is required for SBE connections. Please set it in your environment variables.".into()))?;
+                .ok_or_else(|| Error::WebSocket("
+                    BINANCE_API_KEY is required for SBE connections. \
+                    Please set it in your environment variables.".into()
+                ))?;
 
             let host = url
                 .host_str()
                 .ok_or_else(|| Error::WebSocket("No host in URL".into()))?;
+
             let port = url.port_or_known_default().unwrap_or(443);
 
             let ws_key = generate_key();
@@ -104,10 +106,6 @@ impl BinanceClient {
                 .body(())
                 .map_err(|e| Error::WebSocket(format!("Failed to build request: {}", e)))?;
             
-            // Log request details for debugging
-            debug!("WebSocket request URI: {}", url_str);
-            debug!("WebSocket request headers: Host={}, X-MBX-APIKEY={}***", host, &api_key[..api_key.len().min(8)]);
-
             let tcp_stream = TcpStream::connect(format!("{}:{}", host, port))
                 .await
                 .map_err(|e| Error::WebSocket(format!("TCP connection failed: {}", e)))?;
@@ -121,17 +119,15 @@ impl BinanceClient {
                 .await
                 .map_err(|e| Error::WebSocket(format!("TLS connection failed: {}", e)))?;
 
-            let (stream, response) = client_async(request, tls_stream)
+            let (stream, _) = client_async(request, tls_stream)
                 .await
                 .map_err(|e| {
-                    // Extract detailed error information
                     let error_msg = match &e {
                         tokio_tungstenite::tungstenite::Error::Http(response) => {
                             let status = response.status();
                             let status_text = response.status().canonical_reason().unwrap_or("Unknown");
                             let mut msg = format!("HTTP {} {}", status.as_u16(), status_text);
                             
-                            // Try to get response body if available
                             if let Some(body) = response.body() {
                                 if let Ok(body_str) = std::str::from_utf8(body) {
                                     msg.push_str(&format!(" - Response body: {}", body_str));
@@ -140,7 +136,6 @@ impl BinanceClient {
                                 }
                             }
                             
-                            // Include headers that might be useful
                             let headers: Vec<String> = response
                                 .headers()
                                 .iter()
@@ -157,12 +152,9 @@ impl BinanceClient {
                     Error::WebSocket(format!("Connection failed: {}", error_msg))
                 })?;
             
-            // Log the response for debugging
-            debug!("WebSocket handshake response: {:?}", response);
 
             self.stream = Some(BinanceWsStream::Tls(stream));
         } else {
-            // For non-SBE, use simple connection
             let (stream, _) = connect_async(&url_str)
                 .await
                 .map_err(|e| Error::WebSocket(e.to_string()))?;
@@ -196,7 +188,6 @@ impl BinanceClient {
 
     async fn send_json<T: serde::Serialize>(&mut self, msg: &T) -> Result<()> {
         let json = serde_json::to_string(msg)?;
-        debug!("Sending: {}", json);
 
         match &mut self.stream {
             Some(BinanceWsStream::Standard(s)) => {
@@ -247,8 +238,8 @@ impl BinanceClient {
         self.subscribe(vec![stream]).await
     }
 
-    pub async fn subscribe_depth(&mut self, symbol: &str) -> Result<()> {
-        let stream = BinanceStream::Depth20.stream_name(symbol);
+    pub async fn subscribe_depth(&mut self, symbol: &str, level: u16) -> Result<()> {
+        let stream = BinanceStream::DepthPartial(level).stream_name(symbol);
         self.subscribe(vec![stream]).await
     }
 
@@ -378,11 +369,11 @@ impl BinanceClient {
                         return Err(Error::WebSocket("Stream is None when trying to send pong".into()));
                     }
                 }
-                Ok(None) // Continue loop after handling ping
+                Ok(None)
             }
             Some(Message::Pong(_)) => {
-                debug!("Received unsolicited pong");
-                Ok(None) // Continue loop
+                warn!("Received unsolicited pong");
+                Ok(None)
             }
             Some(Message::Close(frame)) => {
                 if let Some(close_frame) = &frame {
@@ -395,11 +386,11 @@ impl BinanceClient {
             }
             Some(Message::Text(text)) => {
                 warn!("Received unexpected text message in SBE mode: {}", text);
-                Ok(None) // Continue loop
+                Ok(None)
             }
             Some(Message::Frame(_)) => {
                 debug!("Received raw frame (unexpected)");
-                Ok(None) // Continue loop
+                Ok(None)
             }
             None => {
                 warn!("WebSocket stream ended (received None)");
@@ -417,12 +408,13 @@ impl BinanceClient {
                 let received_at = chrono::Utc::now();
                 match self.recv_sbe().await {
                     Ok(Some(msg)) => {
-                        info!("[SBE] Message received at: {}", received_at.format("%Y-%m-%dT%H:%M:%S%.6fZ"));
-                        let update = msg.to_price_update();
-                        if price_tx.send(update).await.is_err() {
-                            warn!("Price channel closed");
-                            break;
-                        }
+                        //info!("[SBE] Message received at: {}", received_at.format("%Y-%m-%dT%H:%M:%S%.6fZ"));
+                        msg.print_update();
+                        // let update = msg.to_price_update();
+                        // if price_tx.send(update).await.is_err() {
+                        //     warn!("Price channel closed");
+                        //     break;
+                        // }
                     }
                     Ok(None) => {
                         // Ping/pong handled, continue loop
