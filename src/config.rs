@@ -26,7 +26,7 @@ impl Config {
         let kalshi_api_key = std::env::var("KALSHI_API_KEY_ID")
             .map_err(|_| Error::Config("KALSHI_API_KEY_ID not set".into()))?;
 
-        let kalshi_private_key = std::env::var("KALSHI_PRIVATE_KEY_PATH")
+        let kalshi_private_key_path = std::env::var("KALSHI_PRIVATE_KEY_PATH")
             .map_err(|_| Error::Config("KALSHI_PRIVATE_KEY_PATH not set".into()))?;
 
         let kalshi_symbols = std::env::var("KALSHI_TRACKED_SYMBOLS")
@@ -46,7 +46,7 @@ impl Config {
         Ok(Config {
             kalshi: KalshiConfig {
                 api_key_id: kalshi_api_key,
-                private_key_path: kalshi_private_key,
+                private_key_path: kalshi_private_key_path,
                 tracked_symbols: kalshi_symbols,
             },
             binance: BinanceConfig {

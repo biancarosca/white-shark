@@ -1,23 +1,23 @@
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::exchanges::kalshi::{KalshiEvent, KalshiTicker};
+use crate::exchanges::kalshi::{KalshiEvent, KalshiMarketStatus, KalshiTicker};
 use crate::exchanges::PriceUpdate;
 
 pub async fn process_events(
-    //mut kalshi_rx: mpsc::Receiver<KalshiEvent>,
-    mut binance_rx: mpsc::Receiver<PriceUpdate>,
+    mut kalshi_rx: mpsc::Receiver<KalshiEvent>,
+    // mut binance_rx: mpsc::Receiver<PriceUpdate>,
 ) {
     info!("Starting event processor...");
 
     loop {
         tokio::select! {
-            // Some(event) = kalshi_rx.recv() => {
-            //     handle_kalshi_event(event);
-            // }
-            Some(price) = binance_rx.recv() => {
-                handle_binance_price(price);
+            Some(event) = kalshi_rx.recv() => {
+                handle_kalshi_event(event);
             }
+            // Some(price) = binance_rx.recv() => {
+            //     handle_binance_price(price);
+            // }
             else => {
                 warn!("All channels closed, stopping event processor");
                 break;
@@ -38,11 +38,9 @@ fn handle_kalshi_event(event: KalshiEvent) {
                 ticker, old_status, new_status
             );
 
-            // React to market lifecycle
-            let status = new_status.to_lowercase();
-            if status == "active" || status == "open" {
+            if new_status == KalshiMarketStatus::Open.as_str() {
                 info!("🟢 Market {} opened!", ticker);
-            } else if status == "closed" || status == "determined" || status == "finalized" {
+            } else if new_status == KalshiMarketStatus::Closed.as_str() {
                 info!("🔴 Market {} closed, find next one...", ticker);
             }
         }
@@ -66,7 +64,6 @@ fn handle_kalshi_event(event: KalshiEvent) {
     }
 }
 
-/// Handle ticker update with arbitrage detection
 fn handle_ticker_update(ticker: &KalshiTicker) {
     let yes_bid = ticker.yes_bid_f64().map(|v| format!("${:.4}", v)).unwrap_or_default();
     let yes_ask = ticker.yes_ask_f64().map(|v| format!("${:.4}", v)).unwrap_or_default();
@@ -75,16 +72,6 @@ fn handle_ticker_update(ticker: &KalshiTicker) {
         "📈 Kalshi {} | YES bid: {} | YES ask: {}",
         ticker.market_ticker, yes_bid, yes_ask
     );
-
-    // Check for arbitrage
-    if let Some(total) = ticker.check_arbitrage() {
-        let yes_ask = ticker.yes_ask_f64().unwrap();
-        let no_ask = ticker.implied_no_ask().unwrap();
-        warn!(
-            "🚨 ARBITRAGE on {}: YES ${:.4} + NO ${:.4} = ${:.4}",
-            ticker.market_ticker, yes_ask, no_ask, total
-        );
-    }
 }
 
 fn handle_binance_price(update: PriceUpdate) {

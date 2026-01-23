@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -11,7 +10,7 @@ use tokio_native_tls::TlsConnector;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 use super::auth::KalshiAuth;
 use super::models::*;
@@ -19,7 +18,6 @@ use crate::error::{Error, Result};
 
 type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
 
-/// Kalshi WebSocket client
 pub struct KalshiWebSocket {
     url: String,
     auth: KalshiAuth,
@@ -87,7 +85,7 @@ impl KalshiWebSocket {
             .map_err(|e| Error::WebSocket(e.to_string()))?;
 
         self.stream = Some(ws_stream);
-        info!("Connected to Kalshi WebSocket");
+        info!("🔋 Connected to Kalshi WebSocket");
 
         Ok(())
     }
@@ -116,7 +114,6 @@ impl KalshiWebSocket {
             .ok_or_else(|| Error::WebSocket("Not connected".into()))?;
 
         let json = serde_json::to_string(msg)?;
-        debug!("Sending: {}", json);
 
         stream
             .send(Message::Text(json))
@@ -165,8 +162,8 @@ impl KalshiWebSocket {
         Ok(())
     }
 
-    pub async fn subscribe_market_lifecycle(&mut self) -> Result<()> {
-        self.subscribe(&[KalshiChannel::MarketLifecycle], None).await
+    pub async fn subscribe_market_lifecycle(&mut self, tickers: Option<Vec<String>>) -> Result<()> {
+        self.subscribe(&[KalshiChannel::MarketLifecycle], tickers).await
     }
 
     pub async fn subscribe_tickers(&mut self, tickers: Vec<String>) -> Result<()> {
@@ -190,15 +187,20 @@ impl KalshiWebSocket {
 
         match stream.next().await {
             Some(Ok(msg)) => Ok(Some(msg)),
-            Some(Err(e)) => Err(Error::WebSocket(e.to_string())),
-            None => Ok(None),
+            Some(Err(e)) => {
+                warn!("WebSocket stream error: {}", e);
+                Err(Error::WebSocket(e.to_string()))
+            }
+            None => {
+                warn!("WebSocket stream returned None (connection closed)");
+                Ok(None)
+            }
         }
     }
 
     pub async fn recv(&mut self) -> Result<Option<KalshiWsMessage>> {
         match self.recv_raw().await? {
             Some(Message::Text(text)) => {
-                debug!("Received: {}", text);
                 let msg: KalshiWsMessage = serde_json::from_str(&text)?;
                 Ok(Some(msg))
             }
@@ -208,26 +210,57 @@ impl KalshiWebSocket {
                 }
                 Ok(None)
             }
-            Some(Message::Close(_)) => {
-                info!("WebSocket closed by server");
+            Some(Message::Close(frame)) => {
+                if let Some(close_frame) = &frame {
+                    warn!("WebSocket closed by server: code={:?}, reason={:?}", 
+                          close_frame.code, close_frame.reason);
+                } else {
+                    warn!("WebSocket closed by server");
+                }
                 self.stream = None;
                 Ok(None)
             }
-            _ => Ok(None),
+            Some(Message::Binary(_)) => {
+                warn!("Received unexpected binary message, ignoring");
+                Ok(None)
+            }
+            None => {
+                warn!("WebSocket stream ended unexpectedly (connection lost)");
+                self.stream = None;
+                Ok(None)
+            }
+            _ => {
+                warn!("Received unexpected message type, ignoring");
+                Ok(None)
+            }
         }
     }
 
-    /// Run message loop, sending events to channel
     pub async fn run(
         &mut self,
         event_tx: mpsc::Sender<KalshiEvent>,
-        market_filter: Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
     ) -> Result<()> {
-        info!("Starting Kalshi WebSocket message loop");
+        info!("🪁 Starting Kalshi WebSocket message loop");
 
-        while let Some(msg) = self.recv().await? {
-            if let Err(e) = self.handle_message(msg, &event_tx, &market_filter).await {
-                error!("Error handling message: {}", e);
+        loop {
+            match self.recv().await {
+                Ok(Some(msg)) => {
+                    if let Err(e) = self.handle_message(msg, &event_tx).await {
+                        error!("Error handling message: {}", e);
+                    }
+                }
+                Ok(None) => {
+                    if self.stream.is_none() {
+                        warn!("WebSocket connection lost, exiting message loop");
+                        break;
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    error!("WebSocket receive error: {}", e);
+                    self.stream = None;
+                    break;
+                }
             }
         }
 
@@ -239,10 +272,9 @@ impl KalshiWebSocket {
         &self,
         msg: KalshiWsMessage,
         event_tx: &mpsc::Sender<KalshiEvent>,
-        market_filter: &Option<Arc<dyn Fn(&str) -> bool + Send + Sync>>,
     ) -> Result<()> {
         if msg.is_subscribed() {
-            debug!("Subscription confirmed");
+            info!("Subscription confirmed");
             return Ok(());
         }
 
@@ -251,95 +283,36 @@ impl KalshiWebSocket {
             return Ok(());
         }
 
-        if let Some(payload) = msg.payload() {
-            if let Some(ticker) = payload.get("market_ticker").and_then(|v| v.as_str()) {
-                // Apply filter if provided
-                if let Some(filter) = market_filter {
-                    if !filter(ticker) {
-                        return Ok(());
-                    }
-                }
+        let payload = match msg.payload() {
+            Some(p) => p,
+            None => return Ok(()),
+        };
 
-                // Check if it's a lifecycle event
-                if let Some(new_status) = payload.get("new_status").and_then(|v| v.as_str()) {
-                    let old_status = payload
-                        .get("old_status")
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
+        let ticker = match payload.get("market_ticker").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => return Ok(()),
+        };
 
-                    let event = KalshiEvent::MarketStatusChanged {
-                        ticker: ticker.to_string(),
-                        old_status,
-                        new_status: new_status.to_string(),
-                    };
+        if let Some(new_status) = payload.get("new_status").and_then(|v| v.as_str()) {
+            let old_status = payload
+                .get("old_status")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
-                    let _ = event_tx.send(event).await;
-                    return Ok(());
-                }
+            let event = KalshiEvent::MarketStatusChanged {
+                ticker: ticker.to_string(),
+                old_status,
+                new_status: new_status.to_string(),
+            };
 
-                // Otherwise treat as ticker update
-                if let Ok(ticker_data) = serde_json::from_value::<KalshiTicker>(payload.clone()) {
-                    let _ = event_tx.send(KalshiEvent::TickerUpdate(ticker_data)).await;
-                }
-            }
+            let _ = event_tx.send(event).await;
+            return Ok(());
+        }
+
+        if let Ok(ticker_data) = serde_json::from_value::<KalshiTicker>(payload.clone()) {
+            let _ = event_tx.send(KalshiEvent::TickerUpdate(ticker_data)).await;
         }
 
         Ok(())
-    }
-}
-
-/// Builder for KalshiWebSocket
-pub struct KalshiWebSocketBuilder {
-    url: Option<String>,
-    api_key: Option<String>,
-    private_key_path: Option<String>,
-}
-
-impl KalshiWebSocketBuilder {
-    pub fn new() -> Self {
-        Self {
-            url: None,
-            api_key: None,
-            private_key_path: None,
-        }
-    }
-
-    pub fn url(mut self, url: &str) -> Self {
-        self.url = Some(url.to_string());
-        self
-    }
-
-    pub fn api_key(mut self, key: &str) -> Self {
-        self.api_key = Some(key.to_string());
-        self
-    }
-
-    pub fn private_key_path(mut self, path: &str) -> Self {
-        self.private_key_path = Some(path.to_string());
-        self
-    }
-
-    pub fn build(self) -> Result<KalshiWebSocket> {
-        let url = self
-            .url
-            .unwrap_or_else(|| "wss://api.elections.kalshi.com/trade-api/ws/v2".to_string());
-
-        let api_key = self
-            .api_key
-            .ok_or_else(|| Error::Config("API key required".into()))?;
-
-        let private_key_path = self
-            .private_key_path
-            .ok_or_else(|| Error::Config("Private key path required".into()))?;
-
-        let auth = KalshiAuth::from_file(&api_key, &private_key_path)?;
-
-        Ok(KalshiWebSocket::new(&url, auth))
-    }
-}
-
-impl Default for KalshiWebSocketBuilder {
-    fn default() -> Self {
-        Self::new()
     }
 }

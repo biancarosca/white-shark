@@ -1,11 +1,5 @@
-//! Kalshi data models
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
-// ============================================================================
-// WebSocket Messages
-// ============================================================================
 
 #[derive(Debug, Serialize)]
 pub struct SubscribeMessage {
@@ -31,30 +25,6 @@ impl SubscribeMessage {
                 market_tickers,
             },
         }
-    }
-
-    pub fn ticker_all(id: u64) -> Self {
-        Self::new(id, vec!["ticker".to_string()], None)
-    }
-
-    pub fn ticker(id: u64, tickers: Vec<String>) -> Self {
-        Self::new(id, vec!["ticker".to_string()], Some(tickers))
-    }
-
-    pub fn orderbook(id: u64, tickers: Vec<String>) -> Self {
-        Self::new(id, vec!["orderbook_delta".to_string()], Some(tickers))
-    }
-
-    pub fn market_status(id: u64) -> Self {
-        Self::new(id, vec!["market_lifecycle".to_string()], None)
-    }
-
-    pub fn trades(id: u64, tickers: Option<Vec<String>>) -> Self {
-        Self::new(id, vec!["trade".to_string()], tickers)
-    }
-
-    pub fn multi(id: u64, channels: Vec<String>, tickers: Option<Vec<String>>) -> Self {
-        Self::new(id, channels, tickers)
     }
 }
 
@@ -98,35 +68,20 @@ impl KalshiWsMessage {
         self.status.as_deref() == Some("subscribed")
     }
 
-    pub fn is_error(&self) -> bool {
-        self.error.is_some()
-    }
 }
 
-// ============================================================================
-// Kalshi Events (sent through channels)
-// ============================================================================
 
-/// Event emitted by Kalshi WebSocket
 #[derive(Debug, Clone)]
 pub enum KalshiEvent {
-    /// Market status changed (opened, closed, etc.)
     MarketStatusChanged {
         ticker: String,
         old_status: Option<String>,
         new_status: String,
     },
-    /// Ticker/price update
     TickerUpdate(KalshiTicker),
-    /// Orderbook update
     OrderbookUpdate(KalshiOrderbook),
-    /// Trade executed
     Trade(KalshiTrade),
 }
-
-// ============================================================================
-// Ticker Data
-// ============================================================================
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KalshiTicker {
@@ -177,34 +132,14 @@ impl KalshiTicker {
     pub fn implied_no_ask(&self) -> Option<f64> {
         self.yes_bid_f64().map(|yb| 1.0 - yb)
     }
-
-    pub fn implied_no_bid(&self) -> Option<f64> {
-        self.yes_ask_f64().map(|ya| 1.0 - ya)
-    }
-
-    /// Check for arbitrage: if YES ask + NO ask < 1.0
-    pub fn check_arbitrage(&self) -> Option<f64> {
-        if let (Some(yes_ask), Some(yes_bid)) = (self.yes_ask_f64(), self.yes_bid_f64()) {
-            let no_ask = 1.0 - yes_bid;
-            let total = yes_ask + no_ask;
-            if total < 1.0 {
-                return Some(total);
-            }
-        }
-        None
-    }
 }
-
-// ============================================================================
-// Market Data (REST)
-// ============================================================================
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KalshiMarket {
     pub ticker: String,
     pub title: Option<String>,
     pub subtitle: Option<String>,
-    pub status: String,
+    pub status: KalshiMarketStatus,
     pub open_time: Option<String>,
     pub close_time: Option<String>,
     pub expiration_time: Option<String>,
@@ -223,76 +158,12 @@ pub struct KalshiMarket {
     pub extra: serde_json::Value,
 }
 
-impl KalshiMarket {
-    /// Check if this is a 15-minute crypto market
-    pub fn is_15m_crypto(&self) -> bool {
-        let ticker_upper = self.ticker.to_uppercase();
-        ticker_upper.contains("15M")
-            && (ticker_upper.contains("ETH")
-                || ticker_upper.contains("BTC")
-                || ticker_upper.contains("SOL"))
-    }
-
-    /// Extract the base crypto symbol (ETH, BTC, etc.)
-    pub fn crypto_symbol(&self) -> Option<&'static str> {
-        let ticker_upper = self.ticker.to_uppercase();
-        if ticker_upper.contains("ETH") {
-            Some("ETH")
-        } else if ticker_upper.contains("BTC") {
-            Some("BTC")
-        } else if ticker_upper.contains("SOL") {
-            Some("SOL")
-        } else {
-            None
-        }
-    }
-
-    /// Check if market is active
-    pub fn is_active(&self) -> bool {
-        self.status.to_lowercase() == "active"
-    }
-
-    /// Check if market is closed
-    pub fn is_closed(&self) -> bool {
-        let status = self.status.to_lowercase();
-        status == "closed" || status == "determined" || status == "finalized"
-    }
-}
 
 #[derive(Debug, Deserialize)]
 pub struct MarketsResponse {
     pub markets: Vec<KalshiMarket>,
     pub cursor: Option<String>,
 }
-
-// ============================================================================
-// Market Lifecycle Events
-// ============================================================================
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct MarketLifecycleEvent {
-    pub market_ticker: String,
-    pub old_status: Option<String>,
-    pub new_status: String,
-    #[serde(default)]
-    pub timestamp: Option<String>,
-}
-
-impl MarketLifecycleEvent {
-    pub fn is_opening(&self) -> bool {
-        self.new_status.to_lowercase() == "active"
-            || self.new_status.to_lowercase() == "open"
-    }
-
-    pub fn is_closing(&self) -> bool {
-        let status = self.new_status.to_lowercase();
-        status == "closed" || status == "determined" || status == "finalized"
-    }
-}
-
-// ============================================================================
-// Orderbook Data
-// ============================================================================
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KalshiOrderbook {
@@ -313,10 +184,6 @@ pub struct OrderbookLevel {
     pub quantity: i64,
 }
 
-// ============================================================================
-// Trade Data
-// ============================================================================
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KalshiTrade {
     pub market_ticker: String,
@@ -328,17 +195,12 @@ pub struct KalshiTrade {
     pub created_time: Option<String>,
 }
 
-// ============================================================================
-// Kalshi Channels
-// ============================================================================
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KalshiChannel {
     Ticker,
     OrderbookDelta,
     Trade,
     MarketLifecycle,
-    Fill,
 }
 
 impl KalshiChannel {
@@ -348,13 +210,30 @@ impl KalshiChannel {
             KalshiChannel::OrderbookDelta => "orderbook_delta",
             KalshiChannel::Trade => "trade",
             KalshiChannel::MarketLifecycle => "market_lifecycle",
-            KalshiChannel::Fill => "fill",
         }
     }
 }
 
-impl From<KalshiChannel> for String {
-    fn from(channel: KalshiChannel) -> Self {
-        channel.as_str().to_string()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KalshiMarketStatus {
+    Unopened,
+    Open,
+    Active,
+    Paused,
+    Closed,
+    Settled
+}
+
+impl KalshiMarketStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            KalshiMarketStatus::Unopened => "unopened",
+            KalshiMarketStatus::Open => "open",
+            KalshiMarketStatus::Active => "active",
+            KalshiMarketStatus::Paused => "paused",
+            KalshiMarketStatus::Closed => "closed",
+            KalshiMarketStatus::Settled => "settled",
+        }
     }
 }

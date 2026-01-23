@@ -7,7 +7,6 @@ pub struct PriceLevel {
     pub quantity: f64,
 }
 
-/// Trade side
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TradeSide {
     Buy,
