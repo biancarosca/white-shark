@@ -80,6 +80,8 @@ pub enum KalshiEvent {
     },
     TickerUpdate(KalshiTicker),
     OrderbookUpdate(KalshiOrderbook),
+    /// Incremental update for orderbook maintenance (apply on top of the latest snapshot/state)
+    OrderbookDelta(KalshiOrderbookDelta),
     Trade(KalshiTrade),
 }
 
@@ -182,6 +184,32 @@ pub struct KalshiOrderbook {
 pub struct OrderbookLevel {
     pub price: f64,
     pub quantity: i64,
+}
+
+/// Wire format for `orderbook_snapshot` messages from Kalshi WebSockets.
+/// See docs: https://docs.kalshi.com/websockets/orderbook-updates
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KalshiOrderbookSnapshot {
+    pub market_ticker: String,
+    /// Price levels for YES side (strings in dollars) + quantity.
+    #[serde(default)]
+    pub yes_dollars: Vec<(String, i64)>,
+    /// Price levels for NO side (strings in dollars) + quantity.
+    #[serde(default)]
+    pub no_dollars: Vec<(String, i64)>,
+}
+
+/// Wire format for `orderbook_delta` messages from Kalshi WebSockets.
+/// See docs: https://docs.kalshi.com/websockets/orderbook-updates
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KalshiOrderbookDelta {
+    pub market_ticker: String,
+    /// Price level for the update, in dollars (e.g. "0.960")
+    pub price_dollars: String,
+    /// Change in quantity at this price level (can be negative)
+    pub delta: i64,
+    /// "yes" or "no"
+    pub side: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

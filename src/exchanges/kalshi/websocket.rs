@@ -288,9 +288,66 @@ impl KalshiWebSocket {
             None => return Ok(()),
         };
 
+        // Check message type first to route correctly
+        match msg.msg_type.as_deref() {
+            Some("orderbook_snapshot") => {
+                match serde_json::from_value::<KalshiOrderbookSnapshot>(payload.clone()) {
+                    Ok(snapshot) => {
+                        let mut yes_bids = Vec::with_capacity(snapshot.yes_dollars.len());
+                        for (p, q) in snapshot.yes_dollars {
+                            if let Ok(price) = p.parse::<f64>() {
+                                yes_bids.push(OrderbookLevel { price, quantity: q });
+                            }
+                        }
+                        let mut no_bids = Vec::with_capacity(snapshot.no_dollars.len());
+                        for (p, q) in snapshot.no_dollars {
+                            if let Ok(price) = p.parse::<f64>() {
+                                no_bids.push(OrderbookLevel { price, quantity: q });
+                            }
+                        }
+
+                        let ob = KalshiOrderbook {
+                            market_ticker: snapshot.market_ticker.clone(),
+                            // Snapshot provides YES and NO books (resting levels). We store them as bids.
+                            yes_bids,
+                            yes_asks: Vec::new(),
+                            no_bids,
+                            no_asks: Vec::new(),
+                        };
+
+                        info!("📸 Received orderbook snapshot for {}", snapshot.market_ticker);
+                        let _ = event_tx.send(KalshiEvent::OrderbookUpdate(ob)).await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse orderbook snapshot: {}, payload: {:?}", e, payload);
+                    }
+                }
+            }
+            Some("orderbook_delta") => {
+                match serde_json::from_value::<KalshiOrderbookDelta>(payload.clone()) {
+                    Ok(delta) => {
+                        info!("📊 Received orderbook delta for {}: {} {} @ {}", 
+                              delta.market_ticker, delta.side, delta.delta, delta.price_dollars);
+                        let _ = event_tx.send(KalshiEvent::OrderbookDelta(delta)).await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse orderbook delta: {}, payload: {:?}", e, payload);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // For other message types, check for market_ticker
         let ticker = match payload.get("market_ticker").and_then(|v| v.as_str()) {
             Some(t) => t,
-            None => return Ok(()),
+            None => {
+                // Log unhandled messages for debugging
+                warn!("Unhandled message type: {:?}, payload: {:?}", msg.msg_type, payload);
+                return Ok(());
+            }
         };
 
         if let Some(new_status) = payload.get("new_status").and_then(|v| v.as_str()) {

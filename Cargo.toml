@@ -58,6 +58,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Async traits
 async-trait = "0.1"
 
+# Concurrent HashMap
+dashmap = "5.5"
+
 [dev-dependencies]
 tokio-test = "0.4"
 

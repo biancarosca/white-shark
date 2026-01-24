@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 use tracing::info;
 
 use super::api::KalshiApi;
@@ -11,12 +10,13 @@ use super::websocket::KalshiWebSocket;
 use crate::config::KalshiConfig;
 use crate::error::{Error, Result};
 use crate::constants::KALSHI_WS_URL;
+use crate::state::KalshiState;
 
 pub struct KalshiClient {
     config: KalshiConfig,
     api: KalshiApi,
     ws: Option<KalshiWebSocket>,
-    tracked_markets: Arc<RwLock<HashMap<String, KalshiMarket>>>,
+    pub state: KalshiState,
 }
 
 impl KalshiClient {
@@ -29,7 +29,7 @@ impl KalshiClient {
             config,
             api,
             ws: None,
-            tracked_markets: Arc::new(RwLock::new(HashMap::new())),
+            state: KalshiState::new(),
         })
     }
 
@@ -59,10 +59,9 @@ impl KalshiClient {
         self.ws.as_ref().map(|ws| ws.is_connected()).unwrap_or(false)
     }
 
-    pub async fn track_market(&self, market: &KalshiMarket) {
-        let mut tracked = self.tracked_markets.write().await;
+    pub fn track_market(&self, market: &KalshiMarket) {
         info!("🪄 Tracking market: {} ({:?})", market.ticker, market.status);
-        tracked.insert(market.ticker.clone(), market.clone());
+        self.state.tracked_markets.insert(market.ticker.clone(), market.clone());
     }
 
     pub async fn start(&mut self, event_tx: mpsc::Sender<KalshiEvent>) -> Result<()> {
@@ -75,14 +74,17 @@ impl KalshiClient {
 
         let mut tickers = Vec::new();
         for market in &markets {
-            self.track_market(market).await;
+            self.track_market(market);
             tickers.push(market.ticker.clone());
         }
 
         let ws = self.websocket_mut()?;
         
-        ws.subscribe_tickers(tickers).await?;
+        // Subscribe to orderbook delta instead of tickers
+        ws.subscribe_orderbook(tickers).await?;
         
+        // Pass orderbooks to event processor via channel metadata
+        // The event processor will maintain the state
         ws.run(event_tx).await?;
 
         Ok(())
