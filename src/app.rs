@@ -4,7 +4,7 @@ use tracing::{error, info};
 use crate::config::Config;
 use crate::error::Result;
 use crate::event_processor::process_events;
-use crate::exchanges::binance::BinanceClient;
+use crate::exchanges::binance::client::BinanceClient;
 use crate::exchanges::kalshi::{KalshiClient, KalshiEvent};
 use crate::exchanges::PriceUpdate;
 
@@ -30,7 +30,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     let binance_config = config.binance.clone();
     let binance_handle = tokio::spawn(async move {
-        let mut client = BinanceClient::new(binance_config.clone()).with_sbe();
+        let mut client = BinanceClient::new(binance_config.clone());
         if let Err(e) = client.start(&binance_config.tracked_symbols, binance_tx).await {
             error!("Binance error: {}", e);
         }

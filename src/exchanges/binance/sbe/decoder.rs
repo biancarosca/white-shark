@@ -3,6 +3,11 @@ use tracing::error;
 
 use crate::error::{Error, Result};
 
+use super::events::{
+    bid_ask::BestBidAskStreamEvent, 
+    depth::DepthSnapshotStreamEvent, 
+    trade::TradeStreamEvent
+};
 use super::messages::*;
 use super::types::*;
 
@@ -67,12 +72,7 @@ impl SbeDecoder {
                     })
             }
             SbeMessageType::DepthDiff => {
-                DepthDiffStreamEvent::decode(body)
-                    .map(SbeMessage::DepthDiff)
-                    .map_err(|e| {
-                        tracing::error!("Failed to decode DepthDiff message (body_len={}): {}", body.len(), e);
-                        e
-                    })
+                Err(Error::SbeDecode("DepthDiff message not supported".into()))
             }
             SbeMessageType::DepthSnapshot => {
                 DepthSnapshotStreamEvent::decode(body)

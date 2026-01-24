@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
 
-// From stream_1_0.xml schema
 pub const SCHEMA_ID: u16 = 1;
 pub const SCHEMA_VERSION: u16 = 0;
 
