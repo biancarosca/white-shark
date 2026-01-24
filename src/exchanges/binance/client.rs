@@ -7,7 +7,6 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{client_async, WebSocketStream};
 use tracing::{debug, error, info, warn};
 
-use super::models::BinanceStream;
 use super::sbe::{decoder::SbeDecoder, messages::SbeMessage, url::build_sbe_combined_url};
 use crate::config::BinanceConfig;
 use crate::error::{Error, Result};
@@ -20,6 +19,7 @@ pub struct BinanceClient {
     config: BinanceConfig,
     stream: Option<WsStream>,
     sbe_decoder: SbeDecoder,
+    recv_buf: Vec<u8>,
 }
 
 impl BinanceClient {
@@ -28,20 +28,18 @@ impl BinanceClient {
             config,
             stream: None,
             sbe_decoder: SbeDecoder::new(),
+            recv_buf: Vec::new(),
         }
     }
 
     fn ws_url(&self, symbols: &[String]) -> String {
-        let streams: Vec<String> = symbols
-            .iter()
-            .flat_map(|s| {
-                vec![
-                    BinanceStream::Trade.stream_name(s),
-                    BinanceStream::BestBidAsk.stream_name(s),
-                    BinanceStream::DepthPartial(20).stream_name(s),
-                ]
-            })
-            .collect();
+        let mut streams = Vec::with_capacity(symbols.len() * 3);
+        for symbol in symbols {
+            let symbol_lower = symbol.to_ascii_lowercase();
+            streams.push(format!("{}@trade", symbol_lower));
+            streams.push(format!("{}@bestBidAsk", symbol_lower));
+            streams.push(format!("{}@depth{}", symbol_lower, 20));
+        }
 
         build_sbe_combined_url(&streams)
     }
@@ -163,10 +161,11 @@ impl BinanceClient {
         }
     }
 
-    pub async fn recv_sbe(&mut self) -> Result<Option<SbeMessage>> {
+    pub async fn recv_sbe<'a>(&'a mut self) -> Result<Option<SbeMessage<'a>>> {
         match self.recv_raw().await? {
             Some(Message::Binary(data)) => {
-                let msg = self.sbe_decoder.decode(&data)?;
+                self.recv_buf = data;
+                let msg = self.sbe_decoder.decode(&self.recv_buf)?;
                 Ok(Some(msg))
             }
             Some(Message::Ping(data)) => {

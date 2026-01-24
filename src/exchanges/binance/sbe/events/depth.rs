@@ -1,64 +1,106 @@
 use chrono::{DateTime, Utc};
-use std::io::Cursor;
-use byteorder::{LittleEndian, ReadBytesExt};
-use tracing::info;
-use crate::{error::Result, 
-    exchanges::binance::sbe::{types::{decode_decimal, micros_to_datetime}, 
-    utils::{read_group_size16, read_var_string8}}
+use tracing::{info, warn};
+use crate::{
+    Error,
+    error::Result,
+    exchanges::binance::sbe::{
+        types::micros_to_datetime,
+        utils::{read_group_size16, read_i64_le_from, SbeCursor},
+    },
 };
 
-#[derive(Debug, Clone)]
-pub struct DepthLevel {
-    pub price: f64,
-    pub qty: f64,
+#[derive(Debug, Clone, Copy)]
+pub struct DepthLevels<'a> {
+    data: &'a [u8],
+    count: u16,
+    block_length: u16,
+    qty_scale: f64,
 }
 
-impl DepthLevel {
-    pub fn decode(cursor: &mut Cursor<&[u8]>, price_exponent: i8, qty_exponent: i8) -> Result<Self> {
-        let price_mantissa = cursor.read_i64::<LittleEndian>()?;
-        let price = decode_decimal(price_mantissa, price_exponent);
-        
-        let qty_mantissa = cursor.read_i64::<LittleEndian>()?;
-        let qty = decode_decimal(qty_mantissa, qty_exponent);
+impl<'a> DepthLevels<'a> {
+    fn new(
+        data: &'a [u8],
+        count: u16,
+        block_length: u16,
+        qty_scale: f64,
+    ) -> Result<Self> {
+        if block_length < 16 {
+            return Err(Error::SbeDecode(format!(
+                "Depth level block too short: need at least 16 bytes, have {} bytes",
+                block_length
+            )));
+        }
+        Ok(Self {
+            data,
+            count,
+            block_length,
+            qty_scale,
+        })
+    }
 
-        Ok(Self { price, qty })
+    pub fn sum_qtys_top5_top10_all(&self) -> Result<(f64, f64, f64)> {
+        let mut top_5_sum = 0.0_f64;
+        let mut top_10_sum = 0.0_f64;
+        let mut all_sum = 0.0_f64;
+        let block_length = self.block_length as usize;
+
+        let mut offset = 0usize;
+        for idx in 0..self.count as usize {
+            let qty_offset = offset + 8;
+            if qty_offset + 8 > self.data.len() {
+                return Err(Error::SbeDecode(format!(
+                    "Not enough data for depth level qty: need {} bytes, have {} bytes",
+                    qty_offset + 8,
+                    self.data.len()
+                )));
+            }
+
+            let qty_mantissa = read_i64_le_from(&self.data[qty_offset..])?;
+            let qty = qty_mantissa as f64 * self.qty_scale;
+            if idx < 5 {
+                top_5_sum += qty;
+            }
+            if idx < 10 {
+                top_10_sum += qty;
+            }
+            all_sum += qty;
+            offset += block_length;
+        }
+
+        Ok((top_5_sum, top_10_sum, all_sum))
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct DepthSnapshotStreamEvent {
+pub struct DepthSnapshotStreamEvent<'a> {
     pub event_time: DateTime<Utc>,
     pub book_update_id: i64,
-    pub bids: Vec<DepthLevel>,
-    pub asks: Vec<DepthLevel>,
-    pub symbol: String,
+    pub bids: DepthLevels<'a>,
+    pub asks: DepthLevels<'a>,
+    pub symbol: &'a str,
 }
 
-impl DepthSnapshotStreamEvent {
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(data);
+impl<'a> DepthSnapshotStreamEvent<'a> {
+    pub fn decode(data: &'a [u8]) -> Result<Self> {
+        let mut cursor = SbeCursor::new(data);
 
-        let event_time_micros = cursor.read_i64::<LittleEndian>()?;
-        
-        let book_update_id = cursor.read_i64::<LittleEndian>()?;
-        
-        let price_exponent = cursor.read_i8()?;
-        
+        let event_time_micros = cursor.read_i64_le()?;
+        let book_update_id = cursor.read_i64_le()?;
+        let _price_exponent = cursor.read_i8()?;
         let qty_exponent = cursor.read_i8()?;
-        
-        let (_bids_block_length, num_bids) = read_group_size16(&mut cursor)?;
-        let mut bids = Vec::with_capacity(num_bids as usize);
-        for _ in 0..num_bids {
-            bids.push(DepthLevel::decode(&mut cursor, price_exponent, qty_exponent)?);
-        }
-        
-        let (_asks_block_length, num_asks) = read_group_size16(&mut cursor)?;
-        let mut asks = Vec::with_capacity(num_asks as usize);
-        for _ in 0..num_asks {
-            asks.push(DepthLevel::decode(&mut cursor, price_exponent, qty_exponent)?);
-        }
-        
-        let symbol = read_var_string8(&mut cursor)?;
+        let qty_scale = 10f64.powi(qty_exponent as i32);
+
+        let (bids_block_length, num_bids) = read_group_size16(&mut cursor)?;
+        let bids_bytes = bids_block_length as usize * num_bids as usize;
+        let bids_data = cursor.read_bytes(bids_bytes)?;
+        let bids = DepthLevels::new(bids_data, num_bids, bids_block_length, qty_scale)?;
+
+        let (asks_block_length, num_asks) = read_group_size16(&mut cursor)?;
+        let asks_bytes = asks_block_length as usize * num_asks as usize;
+        let asks_data = cursor.read_bytes(asks_bytes)?;
+        let asks = DepthLevels::new(asks_data, num_asks, asks_block_length, qty_scale)?;
+
+        let symbol = cursor.read_var_string8()?;
 
         Ok(Self {
             event_time: micros_to_datetime(event_time_micros as u64),
@@ -70,26 +112,43 @@ impl DepthSnapshotStreamEvent {
     }
 
     pub fn print_update(&self) {
-        let top_5_bids_total_qty = self.bids.iter().take(5).map(|b| b.qty).sum::<f64>();
-        let top_5_asks_total_qty = self.asks.iter().take(5).map(|a| a.qty).sum::<f64>();
+        let (top_5_bids_total_qty, top_10_bids_total_qty, all_bids_total_qty) =
+            match self.bids.sum_qtys_top5_top10_all() {
+                Ok(values) => values,
+                Err(e) => {
+                    warn!("Failed to compute bid quantities: {}", e);
+                    return;
+                }
+            };
+        let (top_5_asks_total_qty, top_10_asks_total_qty, all_asks_total_qty) =
+            match self.asks.sum_qtys_top5_top10_all() {
+                Ok(values) => values,
+                Err(e) => {
+                    warn!("Failed to compute ask quantities: {}", e);
+                    return;
+                }
+            };
 
-        if top_5_asks_total_qty < 0.0 {
+        if top_5_asks_total_qty <= 0.0 {
             return;
         }
 
         let imbalance_top_5 = top_5_bids_total_qty / top_5_asks_total_qty;
-
-        let top_10_bids_total_qty = self.bids.iter().take(10).map(|b| b.qty).sum::<f64>();
-        let top_10_asks_total_qty = self.asks.iter().take(10).map(|a| a.qty).sum::<f64>();
         let imbalance_top_10 = top_10_bids_total_qty / top_10_asks_total_qty;
-
-        let all_bids_total_qty = self.bids.iter().map(|b| b.qty).sum::<f64>();
-        let all_asks_total_qty = self.asks.iter().map(|a| a.qty).sum::<f64>();
         let imbalance_all = all_bids_total_qty / all_asks_total_qty;
 
-        info!("📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3}", top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5);
-        info!("📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3}", top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10);
-        info!("📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3}\n", all_bids_total_qty, all_asks_total_qty, imbalance_all);
+        info!(
+            "📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3}",
+            top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5
+        );
+        info!(
+            "📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3}",
+            top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10
+        );
+        info!(
+            "📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3}\n",
+            all_bids_total_qty, all_asks_total_qty, imbalance_all
+        );
         if imbalance_top_5 > 100.0 {
             info!("ALERT: N_5: imbalance\n");
         }

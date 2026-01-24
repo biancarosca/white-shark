@@ -1,9 +1,12 @@
 use chrono::{DateTime, Utc};
-use std::io::Cursor;
-use byteorder::{LittleEndian, ReadBytesExt};
 use tracing::info;
-use crate::{Error, error::Result, exchanges::binance::sbe::{types::{decode_decimal, micros_to_datetime}, 
-    utils::{read_group_size, read_var_string8}}
+use crate::{
+    Error,
+    error::Result,
+    exchanges::binance::sbe::{
+        types::micros_to_datetime,
+        utils::{read_group_size, SbeCursor},
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -15,74 +18,61 @@ pub struct Trade {
 }
 
 #[derive(Debug, Clone)]
-pub struct TradeStreamEvent {
+pub struct TradeStreamEvent<'a> {
     pub event_time: DateTime<Utc>,
     pub transact_time: DateTime<Utc>,
-    pub trades: Vec<Trade>,
-    pub symbol: String,
+    pub last_trade: Option<Trade>,
+    pub symbol: &'a str,
 }
 
-impl TradeStreamEvent {
-    pub fn decode(data: &[u8]) -> Result<Self> {
-        let mut cursor = Cursor::new(data);
-        let data_len = data.len();
+impl<'a> TradeStreamEvent<'a> {
+    pub fn decode(data: &'a [u8]) -> Result<Self> {
+        let mut cursor = SbeCursor::new(data);
 
-        let event_time_micros = cursor.read_i64::<LittleEndian>()?;
-        let transact_time_micros = cursor.read_i64::<LittleEndian>()?;
+        let event_time_micros = cursor.read_i64_le()?;
+        let transact_time_micros = cursor.read_i64_le()?;
         let price_exponent = cursor.read_i8()?;
         let qty_exponent = cursor.read_i8()?;
-        
+        let price_scale = 10f64.powi(price_exponent as i32);
+        let qty_scale = 10f64.powi(qty_exponent as i32);
+
         let (block_length, num_trades) = read_group_size(&mut cursor)?;
-        
+        let block_length = block_length as usize;
 
         let last_trade = if num_trades > 0 {
             if num_trades > 1 {
-                let skip_bytes = (num_trades - 1) as usize * block_length as usize;
-                let current_pos = cursor.position() as usize;
-                if current_pos + skip_bytes <= data_len {
-                    cursor.set_position((current_pos + skip_bytes) as u64);
-                } else {
-                    return Err(Error::SbeDecode(format!(
-                        "Not enough data to skip to last trade: need {} bytes, have {} bytes",
-                        skip_bytes, data_len - current_pos
-                    )));
-                }
+                let skip_bytes = (num_trades - 1) as usize * block_length;
+                cursor.skip(skip_bytes)?;
             }
-            
-            let position_before = cursor.position() as usize;
-            let remaining = data_len - position_before;
-            
-            if remaining < block_length as usize {
+
+            let position_before = cursor.position();
+            if cursor.remaining() < block_length {
                 return Err(Error::SbeDecode(format!(
                     "Not enough data for last trade: need {} bytes, have {} bytes",
-                    block_length, remaining
+                    block_length,
+                    cursor.remaining()
                 )));
             }
-            
-            let id = cursor.read_i64::<LittleEndian>()?;
-            
-            let price_mantissa = cursor.read_i64::<LittleEndian>()?;
-            let price = decode_decimal(price_mantissa, price_exponent);
-            
-            let qty_mantissa = cursor.read_i64::<LittleEndian>()?;
-            let qty = decode_decimal(qty_mantissa, qty_exponent);
-            
+
+            if block_length < 25 {
+                return Err(Error::SbeDecode(format!(
+                    "Trade block too short: need at least 25 bytes, have {} bytes",
+                    block_length
+                )));
+            }
+
+            let id = cursor.read_i64_le()?;
+            let price_mantissa = cursor.read_i64_le()?;
+            let price = price_mantissa as f64 * price_scale;
+            let qty_mantissa = cursor.read_i64_le()?;
+            let qty = qty_mantissa as f64 * qty_scale;
             let is_buyer_maker = cursor.read_u8()? != 0;
-            
-            let bytes_so_far = cursor.position() as usize - position_before;
-            let remaining_in_block = block_length as usize - bytes_so_far;
-            
-            if remaining_in_block >= 1 {
-                let _is_best_match = cursor.read_u8()?;
+
+            let bytes_read = cursor.position() - position_before;
+            if bytes_read < block_length {
+                cursor.skip(block_length - bytes_read)?;
             }
-            
-            let position_after = cursor.position() as usize;
-            let bytes_read = position_after - position_before;
-            
-            if bytes_read < block_length as usize {
-                cursor.set_position((position_before + block_length as usize) as u64);
-            }
-            
+
             Some(Trade {
                 id,
                 price,
@@ -92,29 +82,19 @@ impl TradeStreamEvent {
         } else {
             None
         };
-        
-        let trades = last_trade.into_iter().collect();
-        
-        let remaining = data_len - cursor.position() as usize;
-        if remaining < 1 {
-            return Err(Error::SbeDecode(format!(
-                "Not enough data for symbol: need at least 1 byte, have {} bytes",
-                remaining
-            )));
-        }
-        
-        let symbol = read_var_string8(&mut cursor)?;
+
+        let symbol = cursor.read_var_string8()?;
 
         Ok(Self {
             event_time: micros_to_datetime(event_time_micros as u64),
             transact_time: micros_to_datetime(transact_time_micros as u64),
-            trades,
+            last_trade,
             symbol,
         })
     }
 
     pub fn print_update(&self) {
-        let last_price = self.trades.last().map(|t| t.price).unwrap_or(0.0);
+        let last_price = self.last_trade.as_ref().map(|t| t.price).unwrap_or(0.0);
         info!("⚡ price = {}\n", last_price);
     }
 }
