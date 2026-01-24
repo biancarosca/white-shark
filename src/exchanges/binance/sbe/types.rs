@@ -1,6 +1,5 @@
-use std::io::Cursor;
-
-use byteorder::{LittleEndian, ReadBytesExt};
+use zerocopy::{FromBytes, FromZeroes, Ref, Unaligned};
+use zerocopy::byteorder::{LittleEndian, U16};
 use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
@@ -21,20 +20,26 @@ pub struct MessageHeader {
     pub version: u16,
 }
 
+#[repr(C)]
+#[derive(FromZeroes, FromBytes, Unaligned)]
+struct MessageHeaderRaw {
+    block_length: U16<LittleEndian>,
+    template_id: U16<LittleEndian>,
+    schema_id: U16<LittleEndian>,
+    version: U16<LittleEndian>,
+}
+
 impl MessageHeader {
     pub const SIZE: usize = 8;
 
     pub fn decode(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::SIZE {
-            return Err(Error::SbeDecode("Header too short".into()));
-        }
-
-        let mut cursor = Cursor::new(data);
+        let (raw, _) = Ref::<_, MessageHeaderRaw>::new_from_prefix(data)
+            .ok_or_else(|| Error::SbeDecode("Header too short".into()))?;
         Ok(Self {
-            block_length: cursor.read_u16::<LittleEndian>()?,
-            template_id: cursor.read_u16::<LittleEndian>()?,
-            schema_id: cursor.read_u16::<LittleEndian>()?,
-            version: cursor.read_u16::<LittleEndian>()?,
+            block_length: raw.block_length.get(),
+            template_id: raw.template_id.get(),
+            schema_id: raw.schema_id.get(),
+            version: raw.version.get(),
         })
     }
 

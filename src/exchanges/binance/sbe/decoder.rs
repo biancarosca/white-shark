@@ -31,7 +31,7 @@ impl SbeDecoder {
         }
     }
 
-    pub fn decode(&self, data: &[u8]) -> Result<SbeMessage> {
+    pub fn decode<'a>(&self, data: &'a [u8]) -> Result<SbeMessage<'a>> {
         let header = MessageHeader::decode(data)?;
 
         if header.schema_id != self.expected_schema_id {
@@ -55,33 +55,39 @@ impl SbeDecoder {
         let body = &data[MessageHeader::SIZE..];
 
         match header.message_type() {
-            SbeMessageType::Trade => {
-                TradeStreamEvent::decode(body)
-                    .map(SbeMessage::Trade)
-                    .map_err(|e| {
-                        error!("Failed to decode Trade message (body_len={}): {}", body.len(), e);
+            SbeMessageType::Trade => TradeStreamEvent::decode(body)
+                .map(SbeMessage::Trade)
+                .map_err(|e| {
+                    error!(
+                        "Failed to decode Trade message (body_len={}): {}",
+                        body.len(),
                         e
-                    })
-            }
-            SbeMessageType::BestBidAsk => {
-                BestBidAskStreamEvent::decode(body)
-                    .map(SbeMessage::BestBidAsk)
-                    .map_err(|e| {
-                        error!("Failed to decode BestBidAsk message (body_len={}): {}", body.len(), e);
+                    );
+                    e
+                }),
+            SbeMessageType::BestBidAsk => BestBidAskStreamEvent::decode(body)
+                .map(SbeMessage::BestBidAsk)
+                .map_err(|e| {
+                    error!(
+                        "Failed to decode BestBidAsk message (body_len={}): {}",
+                        body.len(),
                         e
-                    })
-            }
+                    );
+                    e
+                }),
             SbeMessageType::DepthDiff => {
                 Err(Error::SbeDecode("DepthDiff message not supported".into()))
             }
-            SbeMessageType::DepthSnapshot => {
-                DepthSnapshotStreamEvent::decode(body)
-                    .map(SbeMessage::DepthSnapshot)
-                    .map_err(|e| {
-                        tracing::error!("Failed to decode DepthSnapshot message (body_len={}): {}", body.len(), e);
+            SbeMessageType::DepthSnapshot => DepthSnapshotStreamEvent::decode(body)
+                .map(SbeMessage::DepthSnapshot)
+                .map_err(|e| {
+                    tracing::error!(
+                        "Failed to decode DepthSnapshot message (body_len={}): {}",
+                        body.len(),
                         e
-                    })
-            }
+                    );
+                    e
+                }),
             SbeMessageType::Unknown(id) => {
                 error!(
                     "Unknown template ID: {} (schema_id={}, version={}, block_length={}, body_len={})",
