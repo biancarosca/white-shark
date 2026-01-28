@@ -16,11 +16,11 @@ pub struct KalshiClient {
     config: KalshiConfig,
     api: KalshiApi,
     ws: Option<KalshiWebSocket>,
-    pub state: KalshiState,
+    pub state: Arc<KalshiState>,
 }
 
 impl KalshiClient {
-    pub fn new(config: KalshiConfig) -> Result<Self> {
+    pub fn new(config: KalshiConfig, state: Arc<KalshiState>) -> Result<Self> {
         let auth = KalshiAuth::from_file(&config.api_key_id, &config.private_key_path)?;
         let auth_arc = Arc::new(auth);
         let api = KalshiApi::new(auth_arc.clone());
@@ -29,7 +29,7 @@ impl KalshiClient {
             config,
             api,
             ws: None,
-            state: KalshiState::new(),
+            state,
         })
     }
 

@@ -111,7 +111,7 @@ impl<'a> DepthSnapshotStreamEvent<'a> {
         })
     }
 
-    pub fn print_update(&self) {
+    pub fn print_update(&self, imbalance_tx: Option<&tokio::sync::mpsc::Sender<crate::event_processor::ImbalanceAlert>>) {
         let (top_5_bids_total_qty, top_10_bids_total_qty, all_bids_total_qty) =
             match self.bids.sum_qtys_top5_top10_all() {
                 Ok(values) => values,
@@ -137,26 +137,30 @@ impl<'a> DepthSnapshotStreamEvent<'a> {
         let imbalance_top_10 = top_10_bids_total_qty / top_10_asks_total_qty;
         let imbalance_all = all_bids_total_qty / all_asks_total_qty;
 
-        info!(
-            "📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3}",
-            top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5
-        );
-        info!(
-            "📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3}",
-            top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10
-        );
-        info!(
-            "📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3}\n",
-            all_bids_total_qty, all_asks_total_qty, imbalance_all
-        );
-        if imbalance_top_5 > 100.0 {
-            info!("ALERT: N_5: imbalance\n");
-        }
-        if imbalance_top_10 > 100.0 {
-            info!("ALERT: N_10: imbalance\n");
-        }
-        if imbalance_all > 100.0 {
-            info!("ALERT: All: imbalance\n");
+        info!("imbalance_top_5: {}, imbalance_top_10: {}, imbalance_all: {}", imbalance_top_5, imbalance_top_10, imbalance_all);
+
+        let now = chrono::Utc::now();
+        let message_received_time = self.event_time;
+        let imbalance_detected_time = now;
+
+        if imbalance_top_5 > 100.0 || imbalance_top_10 > 100.0 || imbalance_all > 100.0 || imbalance_top_5 < 0.01
+            || imbalance_top_10 < 0.01 || imbalance_all < 0.01 {
+            if let Some(tx) = imbalance_tx {
+                let _ = tx.try_send(crate::event_processor::ImbalanceAlert {
+                    message_received_time,
+                    imbalance_detected_time,
+                    symbol: self.symbol.to_string(),
+                    imbalance_top_5,
+                    imbalance_top_10,
+                    imbalance_all,
+                    top_5_bids: top_5_bids_total_qty,
+                    top_5_asks: top_5_asks_total_qty,
+                    top_10_bids: top_10_bids_total_qty,
+                    top_10_asks: top_10_asks_total_qty,
+                    all_bids: all_bids_total_qty,
+                    all_asks: all_asks_total_qty,
+                });
+            }
         }
     }
 }

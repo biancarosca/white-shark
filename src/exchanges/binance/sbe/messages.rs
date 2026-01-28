@@ -15,11 +15,11 @@ pub enum SbeMessage<'a> {
 }
 
 impl<'a> SbeMessage<'a> {
-    pub fn print_update(&self) {
+    pub fn print_update(&self, imbalance_tx: Option<&tokio::sync::mpsc::Sender<crate::event_processor::ImbalanceAlert>>) {
         match self {
             SbeMessage::Trade(e) => e.print_update(),
             SbeMessage::BestBidAsk(e) => e.print_update(),
-            SbeMessage::DepthSnapshot(e) => e.print_update(),
+            SbeMessage::DepthSnapshot(e) => e.print_update(imbalance_tx),
         }
     }
 

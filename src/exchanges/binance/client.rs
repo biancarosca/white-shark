@@ -20,6 +20,7 @@ pub struct BinanceClient {
     stream: Option<WsStream>,
     sbe_decoder: SbeDecoder,
     recv_buf: Vec<u8>,
+    imbalance_tx: Option<tokio::sync::mpsc::Sender<crate::event_processor::ImbalanceAlert>>,
 }
 
 impl BinanceClient {
@@ -29,15 +30,20 @@ impl BinanceClient {
             stream: None,
             sbe_decoder: SbeDecoder::new(),
             recv_buf: Vec::new(),
+            imbalance_tx: None,
         }
+    }
+
+    pub fn set_imbalance_tx(&mut self, tx: tokio::sync::mpsc::Sender<crate::event_processor::ImbalanceAlert>) {
+        self.imbalance_tx = Some(tx);
     }
 
     fn ws_url(&self, symbols: &[String]) -> String {
         let mut streams = Vec::with_capacity(symbols.len() * 3);
         for symbol in symbols {
             let symbol_lower = symbol.to_ascii_lowercase();
-            streams.push(format!("{}@trade", symbol_lower));
-            streams.push(format!("{}@bestBidAsk", symbol_lower));
+            // streams.push(format!("{}@trade", symbol_lower));
+            // streams.push(format!("{}@bestBidAsk", symbol_lower));
             streams.push(format!("{}@depth{}", symbol_lower, 20));
         }
 
@@ -216,10 +222,11 @@ impl BinanceClient {
         info!("Starting Binance message loop");
 
         let _ = price_tx;
+        let imbalance_tx = self.imbalance_tx.clone();
         loop {
             match self.recv_sbe().await {
                 Ok(Some(msg)) => {
-                    msg.print_update();
+                    msg.print_update(imbalance_tx.as_ref());
                 }
                 Ok(None) => {
                     continue;
