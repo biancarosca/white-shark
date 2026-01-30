@@ -40,6 +40,9 @@ pub enum Error {
     #[error("SBE decode error: {0}")]
     SbeDecode(String),
 
+    #[error("Database error: {0}")]
+    Database(String),
+
     #[error("{0}")]
     Other(String),
 }

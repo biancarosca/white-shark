@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::str::FromStr;
 
 #[derive(Debug, Serialize)]
 pub struct SubscribeMessage {
@@ -29,20 +30,31 @@ impl SubscribeMessage {
 }
 
 #[derive(Debug, Serialize)]
+pub struct UnsubscribeParams {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sids: Option<Vec<u64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub market_tickers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct UnsubscribeMessage {
     pub id: u64,
     pub cmd: String,
-    pub params: SubscribeParams,
+    pub params: UnsubscribeParams,
 }
 
 impl UnsubscribeMessage {
-    pub fn new(id: u64, channels: Vec<String>, market_tickers: Option<Vec<String>>) -> Self {
+    pub fn new(id: u64, sids: Vec<u64>) -> Self {
         Self {
             id,
             cmd: "unsubscribe".to_string(),
-            params: SubscribeParams {
-                channels,
-                market_tickers,
+            params: UnsubscribeParams {
+                sids: Some(sids),
+                channels: None,
+                market_tickers: None,
             },
         }
     }
@@ -65,7 +77,7 @@ impl KalshiWsMessage {
     }
 
     pub fn is_subscribed(&self) -> bool {
-        self.status.as_deref() == Some("subscribed")
+        self.msg_type.as_deref() == Some("subscribed")
     }
 
 }
@@ -75,12 +87,11 @@ impl KalshiWsMessage {
 pub enum KalshiEvent {
     MarketStatusChanged {
         ticker: String,
-        old_status: Option<String>,
-        new_status: String,
+        old_status: Option<KalshiMarketStatus>,
+        new_status: KalshiMarketStatus,
     },
     TickerUpdate(KalshiTicker),
     OrderbookUpdate(KalshiOrderbook),
-    /// Incremental update for orderbook maintenance (apply on top of the latest snapshot/state)
     OrderbookDelta(KalshiOrderbookDelta),
     Trade(KalshiTrade),
 }
@@ -89,46 +100,77 @@ pub enum KalshiEvent {
 pub struct KalshiTicker {
     pub market_ticker: String,
     #[serde(default)]
-    pub yes_bid: Option<f64>,
+    pub price: Option<i64>, // Last traded price in cents (1-99)
     #[serde(default)]
-    pub yes_ask: Option<f64>,
+    pub yes_bid: Option<i64>, // Best bid price for yes side in cents
     #[serde(default)]
-    pub yes_bid_dollars: Option<String>,
+    pub yes_ask: Option<i64>, // Best ask price for yes side in cents
     #[serde(default)]
-    pub yes_ask_dollars: Option<String>,
+    pub price_dollars: Option<String>, // Last traded price in dollars
     #[serde(default)]
-    pub no_bid: Option<f64>,
+    pub yes_bid_dollars: Option<String>, // Best bid price for yes side in dollars
     #[serde(default)]
-    pub no_ask: Option<f64>,
+    pub no_bid_dollars: Option<String>, // Best bid price for no side in dollars
     #[serde(default)]
-    pub last_price: Option<f64>,
+    pub volume: Option<i64>, // Number of individual contracts traded
     #[serde(default)]
-    pub volume: Option<f64>,
+    pub volume_fp: Option<String>, // Fixed-point total contracts traded (2 decimals)
     #[serde(default)]
-    pub dollar_volume: Option<f64>,
+    pub open_interest: Option<i64>, // Number of active contracts
     #[serde(default)]
-    pub open_interest: Option<f64>,
+    pub open_interest_fp: Option<String>, // Fixed-point open interest (2 decimals)
     #[serde(default)]
-    pub dollar_open_interest: Option<f64>,
+    pub dollar_volume: Option<i64>, // Number of dollars traded
     #[serde(default)]
-    pub timestamp: Option<DateTime<Utc>>,
+    pub dollar_open_interest: Option<i64>, // Number of dollars positioned
+    #[serde(default)]
+    pub ts: Option<i64>, // Unix timestamp in seconds
 }
 
 impl KalshiTicker {
+    /// Get YES ask price as f64 (from cents converted to decimal)
     pub fn yes_ask_f64(&self) -> Option<f64> {
-        self.yes_ask.or_else(|| {
-            self.yes_ask_dollars
-                .as_ref()
-                .and_then(|s| s.parse::<f64>().ok())
-        })
+        // Convert cents to decimal (cents / 100)
+        self.yes_ask.map(|cents| cents as f64 / 100.0)
     }
 
+    /// Get YES bid price as f64 (from dollars string or cents converted to decimal)
     pub fn yes_bid_f64(&self) -> Option<f64> {
-        self.yes_bid.or_else(|| {
-            self.yes_bid_dollars
-                .as_ref()
-                .and_then(|s| s.parse::<f64>().ok())
-        })
+        // Try dollars string first
+        self.yes_bid_dollars
+            .as_ref()
+            .and_then(|d| d.parse::<f64>().ok())
+            .or_else(|| {
+                // Fall back to cents converted to decimal (cents / 100)
+                self.yes_bid.map(|cents| cents as f64 / 100.0)
+            })
+    }
+
+    /// Get NO bid price as f64 (from dollars string)
+    pub fn no_bid_f64(&self) -> Option<f64> {
+        self.no_bid_dollars
+            .as_ref()
+            .and_then(|s| s.parse::<f64>().ok())
+    }
+
+    /// Get NO ask price as f64 (inferred from YES bid: 1 - yes_bid)
+    pub fn no_ask_f64(&self) -> Option<f64> {
+        self.yes_bid_f64().map(|yes_bid| 1.0 - yes_bid)
+    }
+
+    /// Get last price as f64 (from dollars string or cents converted to decimal)
+    pub fn price_f64(&self) -> Option<f64> {
+        self.price_dollars
+            .as_ref()
+            .and_then(|d| d.parse::<f64>().ok())
+            .or_else(|| {
+                self.price.map(|cents| cents as f64 / 100.0)
+            })
+    }
+
+    /// Get timestamp as DateTime<Utc>
+    pub fn timestamp(&self) -> Option<DateTime<Utc>> {
+        self.ts.and_then(|ts| DateTime::from_timestamp(ts, 0))
     }
 
     pub fn implied_no_ask(&self) -> Option<f64> {
@@ -186,30 +228,97 @@ pub struct OrderbookLevel {
     pub quantity: i64,
 }
 
-/// Wire format for `orderbook_snapshot` messages from Kalshi WebSockets.
-/// See docs: https://docs.kalshi.com/websockets/orderbook-updates
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KalshiOrderbookSnapshot {
     pub market_ticker: String,
-    /// Price levels for YES side (strings in dollars) + quantity.
     #[serde(default)]
     pub yes_dollars: Vec<(String, i64)>,
-    /// Price levels for NO side (strings in dollars) + quantity.
     #[serde(default)]
     pub no_dollars: Vec<(String, i64)>,
 }
 
-/// Wire format for `orderbook_delta` messages from Kalshi WebSockets.
-/// See docs: https://docs.kalshi.com/websockets/orderbook-updates
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct KalshiOrderbookDelta {
     pub market_ticker: String,
-    /// Price level for the update, in dollars (e.g. "0.960")
     pub price_dollars: String,
-    /// Change in quantity at this price level (can be negative)
     pub delta: i64,
-    /// "yes" or "no"
     pub side: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KalshiMarketLifecycleEventType {
+    Created,
+    Activated,
+    Deactivated,
+    CloseDateUpdated,
+    Determined,
+    Settled,
+}
+
+impl FromStr for KalshiMarketLifecycleEventType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "created" => Ok(KalshiMarketLifecycleEventType::Created),
+            "activated" => Ok(KalshiMarketLifecycleEventType::Activated),
+            "deactivated" => Ok(KalshiMarketLifecycleEventType::Deactivated),
+            "close_date_updated" => Ok(KalshiMarketLifecycleEventType::CloseDateUpdated),
+            "determined" => Ok(KalshiMarketLifecycleEventType::Determined),
+            "settled" => Ok(KalshiMarketLifecycleEventType::Settled),
+            _ => Err(format!("Unknown event type: {}", s)),
+        }
+    }
+}
+
+fn deserialize_event_type<'de, D>(deserializer: D) -> Result<KalshiMarketLifecycleEventType, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    KalshiMarketLifecycleEventType::from_str(&s)
+        .map_err(serde::de::Error::custom)
+}
+
+impl KalshiMarketLifecycleEventType {
+    pub fn to_status(&self, is_deactivated: Option<bool>) -> Option<KalshiMarketStatus> {
+        match self {
+            Self::Created => Some(KalshiMarketStatus::Unopened),
+            Self::Activated => Some(KalshiMarketStatus::Open),
+            Self::Deactivated => {
+                if is_deactivated == Some(true) {
+                    Some(KalshiMarketStatus::Paused)
+                } else {
+                    Some(KalshiMarketStatus::Open)
+                }
+            }
+            Self::CloseDateUpdated => Some(KalshiMarketStatus::Open),
+            Self::Determined => Some(KalshiMarketStatus::Closed),
+            Self::Settled => Some(KalshiMarketStatus::Settled),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KalshiMarketLifecycleMsg {
+    #[serde(deserialize_with = "deserialize_event_type")]
+    pub event_type: KalshiMarketLifecycleEventType,
+    pub market_ticker: String,
+    #[serde(default)]
+    pub open_ts: Option<i64>,
+    #[serde(default)]
+    pub close_ts: Option<i64>,
+    #[serde(default)]
+    pub result: Option<String>,
+    #[serde(default)]
+    pub determination_ts: Option<i64>,
+    #[serde(default)]
+    pub settled_ts: Option<i64>,
+    #[serde(default)]
+    pub is_deactivated: Option<bool>,
+    #[serde(default)]
+    pub additional_metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -237,7 +346,7 @@ impl KalshiChannel {
             KalshiChannel::Ticker => "ticker",
             KalshiChannel::OrderbookDelta => "orderbook_delta",
             KalshiChannel::Trade => "trade",
-            KalshiChannel::MarketLifecycle => "market_lifecycle",
+            KalshiChannel::MarketLifecycle => "market_lifecycle_v2",
         }
     }
 }

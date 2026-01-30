@@ -61,6 +61,12 @@ async-trait = "0.1"
 # Concurrent HashMap
 dashmap = "5.5"
 
+# Database (TiDB is MySQL-compatible)
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "mysql", "chrono"] }
+sea-orm = { version = "0.12.0", features = ["sqlx-mysql", "runtime-tokio-native-tls", "macros", "chrono"] }
+rust_decimal = { version = "1.33", features = ["serde-with-str"] }
+sea-query = "0.12.0"
+
 [dev-dependencies]
 tokio-test = "0.4"
 

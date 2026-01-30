@@ -1,6 +1,5 @@
 //! Kalshi WebSocket client
 
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::{SinkExt, StreamExt};
@@ -23,8 +22,6 @@ pub struct KalshiWebSocket {
     auth: KalshiAuth,
     stream: Option<WsStream>,
     message_id: AtomicU64,
-    subscribed_markets: HashSet<String>,
-    subscribed_channels: HashSet<String>,
 }
 
 impl KalshiWebSocket {
@@ -34,8 +31,6 @@ impl KalshiWebSocket {
             auth,
             stream: None,
             message_id: AtomicU64::new(1),
-            subscribed_markets: HashSet::new(),
-            subscribed_channels: HashSet::new(),
         }
     }
 
@@ -97,8 +92,6 @@ impl KalshiWebSocket {
                 .await
                 .map_err(|e| Error::WebSocket(e.to_string()))?;
         }
-        self.subscribed_markets.clear();
-        self.subscribed_channels.clear();
         info!("Disconnected from Kalshi WebSocket");
         Ok(())
     }
@@ -129,41 +122,19 @@ impl KalshiWebSocket {
         tickers: Option<Vec<String>>,
     ) -> Result<()> {
         let channel_strs: Vec<String> = channels.iter().map(|c| c.as_str().to_string()).collect();
-        let msg = SubscribeMessage::new(self.next_id(), channel_strs.clone(), tickers.clone());
+        let msg = SubscribeMessage::new(self.next_id(), channel_strs, tickers);
         self.send_message(&msg).await?;
-
-        for channel in channel_strs {
-            self.subscribed_channels.insert(channel);
-        }
-        if let Some(t) = tickers {
-            for ticker in t {
-                self.subscribed_markets.insert(ticker);
-            }
-        }
-
         Ok(())
     }
 
-    pub async fn unsubscribe(
-        &mut self,
-        channels: &[KalshiChannel],
-        tickers: Option<Vec<String>>,
-    ) -> Result<()> {
-        let channel_strs: Vec<String> = channels.iter().map(|c| c.as_str().to_string()).collect();
-        let msg = UnsubscribeMessage::new(self.next_id(), channel_strs.clone(), tickers.clone());
+    pub async fn unsubscribe(&mut self, sids: Vec<u64>) -> Result<()> {
+        let msg = UnsubscribeMessage::new(self.next_id(), sids);
         self.send_message(&msg).await?;
-
-        if let Some(t) = tickers {
-            for ticker in t {
-                self.subscribed_markets.remove(&ticker);
-            }
-        }
-
         Ok(())
     }
 
-    pub async fn subscribe_market_lifecycle(&mut self, tickers: Option<Vec<String>>) -> Result<()> {
-        self.subscribe(&[KalshiChannel::MarketLifecycle], tickers).await
+    pub async fn subscribe_market_lifecycle(&mut self) -> Result<()> {
+        self.subscribe(&[KalshiChannel::MarketLifecycle], None).await
     }
 
     pub async fn subscribe_tickers(&mut self, tickers: Vec<String>) -> Result<()> {
@@ -238,15 +209,16 @@ impl KalshiWebSocket {
 
     pub async fn run(
         &mut self,
-        event_tx: mpsc::Sender<KalshiEvent>,
+        msg_tx: mpsc::Sender<KalshiWsMessage>,
     ) -> Result<()> {
         info!("🪁 Starting Kalshi WebSocket message loop");
 
         loop {
             match self.recv().await {
                 Ok(Some(msg)) => {
-                    if let Err(e) = self.handle_message(msg, &event_tx).await {
-                        error!("Error handling message: {}", e);
+                    if let Err(e) = msg_tx.send(msg).await {
+                        error!("Failed to send message to state manager: {}", e);
+                        break;
                     }
                 }
                 Ok(None) => {
@@ -265,111 +237,6 @@ impl KalshiWebSocket {
         }
 
         warn!("WebSocket message loop ended");
-        Ok(())
-    }
-
-    async fn handle_message(
-        &self,
-        msg: KalshiWsMessage,
-        event_tx: &mpsc::Sender<KalshiEvent>,
-    ) -> Result<()> {
-        if msg.is_subscribed() {
-            info!("Subscription confirmed");
-            return Ok(());
-        }
-
-        if let Some(error) = &msg.error {
-            error!("WebSocket error: {}", error);
-            return Ok(());
-        }
-
-        let payload = match msg.payload() {
-            Some(p) => p,
-            None => return Ok(()),
-        };
-
-        // Check message type first to route correctly
-        match msg.msg_type.as_deref() {
-            Some("orderbook_snapshot") => {
-                match serde_json::from_value::<KalshiOrderbookSnapshot>(payload.clone()) {
-                    Ok(snapshot) => {
-                        let mut yes_bids = Vec::with_capacity(snapshot.yes_dollars.len());
-                        for (p, q) in snapshot.yes_dollars {
-                            if let Ok(price) = p.parse::<f64>() {
-                                yes_bids.push(OrderbookLevel { price, quantity: q });
-                            }
-                        }
-                        let mut no_bids = Vec::with_capacity(snapshot.no_dollars.len());
-                        for (p, q) in snapshot.no_dollars {
-                            if let Ok(price) = p.parse::<f64>() {
-                                no_bids.push(OrderbookLevel { price, quantity: q });
-                            }
-                        }
-
-                        let ob = KalshiOrderbook {
-                            market_ticker: snapshot.market_ticker.clone(),
-                            // Snapshot provides YES and NO books (resting levels). We store them as bids.
-                            yes_bids,
-                            yes_asks: Vec::new(),
-                            no_bids,
-                            no_asks: Vec::new(),
-                        };
-
-                        info!("📸 Received orderbook snapshot for {}", snapshot.market_ticker);
-                        let _ = event_tx.send(KalshiEvent::OrderbookUpdate(ob)).await;
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse orderbook snapshot: {}, payload: {:?}", e, payload);
-                    }
-                }
-            }
-            Some("orderbook_delta") => {
-                match serde_json::from_value::<KalshiOrderbookDelta>(payload.clone()) {
-                    Ok(delta) => {
-                        info!("📊 Received orderbook delta for {}: {} {} @ {}", 
-                              delta.market_ticker, delta.side, delta.delta, delta.price_dollars);
-                        let _ = event_tx.send(KalshiEvent::OrderbookDelta(delta)).await;
-                        return Ok(());
-                    }
-                    Err(e) => {
-                        warn!("Failed to parse orderbook delta: {}, payload: {:?}", e, payload);
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        // For other message types, check for market_ticker
-        let ticker = match payload.get("market_ticker").and_then(|v| v.as_str()) {
-            Some(t) => t,
-            None => {
-                // Log unhandled messages for debugging
-                warn!("Unhandled message type: {:?}, payload: {:?}", msg.msg_type, payload);
-                return Ok(());
-            }
-        };
-
-        if let Some(new_status) = payload.get("new_status").and_then(|v| v.as_str()) {
-            let old_status = payload
-                .get("old_status")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-
-            let event = KalshiEvent::MarketStatusChanged {
-                ticker: ticker.to_string(),
-                old_status,
-                new_status: new_status.to_string(),
-            };
-
-            let _ = event_tx.send(event).await;
-            return Ok(());
-        }
-
-        if let Ok(ticker_data) = serde_json::from_value::<KalshiTicker>(payload.clone()) {
-            let _ = event_tx.send(KalshiEvent::TickerUpdate(ticker_data)).await;
-        }
-
         Ok(())
     }
 }

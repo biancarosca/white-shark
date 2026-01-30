@@ -4,6 +4,7 @@ use crate::error::{Error, Result};
 pub struct Config {
     pub kalshi: KalshiConfig,
     pub binance: BinanceConfig,
+    pub database: DatabaseConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -17,6 +18,11 @@ pub struct KalshiConfig {
 pub struct BinanceConfig {
     pub api_key: Option<String>,
     pub tracked_symbols: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DatabaseConfig {
+    pub url: String,
 }
 
 impl Config {
@@ -43,6 +49,9 @@ impl Config {
             .map(|s| s.trim().to_uppercase())
             .collect();
 
+        let database_url = std::env::var("DATABASE_URL")
+            .map_err(|_| Error::Config("DATABASE_URL not set".into()))?;
+
         Ok(Config {
             kalshi: KalshiConfig {
                 api_key_id: kalshi_api_key,
@@ -52,6 +61,9 @@ impl Config {
             binance: BinanceConfig {
                 api_key: binance_api_key,
                 tracked_symbols: binance_symbols
+            },
+            database: DatabaseConfig {
+                url: database_url,
             },
         })
     }

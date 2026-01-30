@@ -1,13 +1,12 @@
 use dashmap::DashMap;
 
-use crate::exchanges::kalshi::{KalshiMarket, KalshiOrderbook};
+use crate::exchanges::kalshi::{KalshiMarket, KalshiOrderbook, KalshiTicker};
 
-/// Global application state for Kalshi exchange
-/// Uses DashMap for efficient concurrent access without explicit locking
 #[derive(Clone)]
 pub struct KalshiState {
     pub tracked_markets: DashMap<String, KalshiMarket>,
     pub orderbooks: DashMap<String, KalshiOrderbook>,
+    pub tickers: DashMap<String, KalshiTicker>,
 }
 
 impl KalshiState {
@@ -15,10 +14,10 @@ impl KalshiState {
         Self {
             tracked_markets: DashMap::new(),
             orderbooks: DashMap::new(),
+            tickers: DashMap::new(),
         }
     }
 
-    /// Get the top bid price for a market
     pub fn get_top_bid(&self, market_ticker: &str) -> Option<f64> {
         self.orderbooks
             .get(market_ticker)?
@@ -27,7 +26,6 @@ impl KalshiState {
             .map(|level| level.price)
     }
 
-    /// Get the top ask price for a market
     pub fn get_top_ask(&self, market_ticker: &str) -> Option<f64> {
         self.orderbooks
             .get(market_ticker)?
@@ -36,7 +34,6 @@ impl KalshiState {
             .map(|level| level.price)
     }
 
-    /// Get the full orderbook for a market
     pub fn get_orderbook(&self, market_ticker: &str) -> Option<KalshiOrderbook> {
         self.orderbooks.get(market_ticker).map(|entry| entry.value().clone())
     }
