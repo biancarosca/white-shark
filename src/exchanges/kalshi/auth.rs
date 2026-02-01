@@ -18,11 +18,20 @@ pub struct KalshiAuth {
 }
 
 impl KalshiAuth {
+    /// Create auth from PEM content string (for environment variable)
+    pub fn from_pem_content(api_key_id: &str, pem_content: &str) -> Result<Self> {
+        Self::parse_pem(api_key_id, pem_content.as_bytes())
+    }
+
+    /// Create auth from PEM file path (for local development)
     pub fn from_file(api_key_id: &str, private_key_path: &str) -> Result<Self> {
         let key_data = std::fs::read(private_key_path)
             .map_err(|e| Error::Auth(format!("Failed to read private key: {}", e)))?;
+        Self::parse_pem(api_key_id, &key_data)
+    }
 
-        let pem_data = parse(&key_data)
+    fn parse_pem(api_key_id: &str, key_data: &[u8]) -> Result<Self> {
+        let pem_data = parse(key_data)
             .map_err(|e| Error::Auth(format!("Failed to parse PEM: {}", e)))?;
 
         let private_key = match pem_data.tag().to_string().as_str() {

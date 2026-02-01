@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, Mutex};
+use tokio::time::interval;
 use tracing::{info, warn, error};
 
 use super::api::KalshiApi;
@@ -9,10 +12,22 @@ use super::auth::KalshiAuth;
 use super::models::*;
 use super::websocket::KalshiWebSocket;
 use crate::config::KalshiConfig;
+use crate::db::main::Db;
 use crate::error::{Error, Result};
 use crate::constants::KALSHI_WS_URL;
 use crate::state::KalshiState;
 use crate::exchanges::kalshi::{KalshiOrderbook, OrderbookLevel};
+
+/// Represents a market data update to be batched and inserted
+#[derive(Clone)]
+struct MarketDataUpdate {
+    ticker: String,
+    timestamp: DateTime<Utc>,
+    yes_ask: f64,
+    yes_bid: f64,
+    no_ask: f64,
+    no_bid: f64,
+}
 
 pub struct KalshiClient {
     config: KalshiConfig,
@@ -22,17 +37,43 @@ pub struct KalshiClient {
     current_market: Option<KalshiMarket>,
     series_ticker: String,
     subscription_ids: HashMap<String, Vec<u64>>, // Track SIDs by ticker/channel
+    db: Arc<Db>,
+    market_data_tx: mpsc::Sender<MarketDataUpdate>,
 }
 
+const BATCH_SIZE: usize = 200;
+const FLUSH_INTERVAL_MS: u64 = 100000;
+
+// Reconnection settings
+const INITIAL_BACKOFF_SECS: u64 = 1;
+const MAX_BACKOFF_SECS: u64 = 60;
+
 impl KalshiClient {
-    pub fn new(config: KalshiConfig) -> Result<Self> {
-        let auth = KalshiAuth::from_file(&config.api_key_id, &config.private_key_path)?;
+    /// Create KalshiAuth from config (prefers PEM content over file path)
+    fn create_auth(config: &KalshiConfig) -> Result<KalshiAuth> {
+        if let Some(ref pem_content) = config.private_key {
+            KalshiAuth::from_pem_content(&config.api_key_id, pem_content)
+        } else if let Some(ref path) = config.private_key_path {
+            KalshiAuth::from_file(&config.api_key_id, path)
+        } else {
+            Err(Error::Config("No private key configured".into()))
+        }
+    }
+
+    pub fn new(config: KalshiConfig, db: Arc<Db>) -> Result<Self> {
+        let auth = Self::create_auth(&config)?;
         let auth_arc = Arc::new(auth);
         let api = KalshiApi::new(auth_arc.clone());
 
         let series_ticker = config.tracked_symbols.first()
             .ok_or_else(|| Error::Config("No tracked symbols configured".into()))?
             .clone();
+
+        // Create channel for batching market data inserts
+        let (market_data_tx, market_data_rx) = mpsc::channel::<MarketDataUpdate>(1000);
+        
+        // Spawn background task for batched DB inserts
+        Self::spawn_market_data_writer(db.clone(), market_data_rx);
 
         Ok(Self {
             config,
@@ -42,11 +83,70 @@ impl KalshiClient {
             current_market: None,
             series_ticker,
             subscription_ids: HashMap::new(),
+            db,
+            market_data_tx,
         })
     }
 
+    /// Spawns a background task that batches and inserts market data
+    fn spawn_market_data_writer(db: Arc<Db>, mut rx: mpsc::Receiver<MarketDataUpdate>) {
+        tokio::spawn(async move {
+            let mut batch: Vec<MarketDataUpdate> = Vec::with_capacity(BATCH_SIZE);
+            let mut flush_interval = interval(Duration::from_millis(FLUSH_INTERVAL_MS));
+
+            loop {
+                tokio::select! {
+                    // Receive new updates
+                    maybe_update = rx.recv() => {
+                        match maybe_update {
+                            Some(update) => {
+                                batch.push(update);
+                                if batch.len() >= BATCH_SIZE {
+                                    Self::flush_batch(&db, &mut batch).await;
+                                }
+                            }
+                            None => {
+                                // Channel closed, flush remaining and exit
+                                if !batch.is_empty() {
+                                    Self::flush_batch(&db, &mut batch).await;
+                                }
+                                info!("Market data writer shutting down");
+                                break;
+                            }
+                        }
+                    }
+                    // Periodic flush
+                    _ = flush_interval.tick() => {
+                        if !batch.is_empty() {
+                            Self::flush_batch(&db, &mut batch).await;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Flushes a batch of market data updates to the database
+    async fn flush_batch(db: &Db, batch: &mut Vec<MarketDataUpdate>) {
+        if batch.is_empty() {
+            return;
+        }
+
+        let count = batch.len();
+        let records: Vec<_> = batch
+            .drain(..)
+            .map(|u| (u.ticker, u.timestamp, u.yes_ask, u.yes_bid, u.no_ask, u.no_bid))
+            .collect();
+
+        if let Err(e) = db.insert_market_data_batch(records).await {
+            error!("Failed to batch insert market data: {}", e);
+        } else {
+            info!("📝 Flushed {} market data records to DB", count);
+        }
+    }
+
     pub async fn connect(&mut self) -> Result<()> {
-        let auth = KalshiAuth::from_file(&self.config.api_key_id, &self.config.private_key_path)?;
+        let auth = Self::create_auth(&self.config)?;
         let mut ws = KalshiWebSocket::new(KALSHI_WS_URL, auth);
         ws.connect().await?;
         self.ws = Some(Arc::new(Mutex::new(ws)));
@@ -76,19 +176,64 @@ impl KalshiClient {
     }
 
     pub async fn start(&mut self) -> Result<()> {
-        if !self.is_connected().await {
-            self.connect().await?;
+        let mut backoff_secs = INITIAL_BACKOFF_SECS;
+
+        loop {
+            // Connect and run the WebSocket loop
+            // Returns (result, whether connection was stable)
+            let (result, was_stable) = self.run_connection_loop().await;
+            
+            match result {
+                Ok(_) => {
+                    info!("WebSocket loop exited cleanly");
+                    break;
+                }
+                Err(e) => {
+                    // Reset backoff if we had a stable connection before failing
+                    if was_stable {
+                        backoff_secs = INITIAL_BACKOFF_SECS;
+                    }
+                    
+                    error!("🔴 WebSocket error: {}. Reconnecting in {}s...", e, backoff_secs);
+                    
+                    // Disconnect cleanly if possible
+                    let _ = self.disconnect().await;
+                    
+                    // Wait with exponential backoff
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                }
+            }
         }
-        
-        self.fetch_and_set_next_market().await?;
-        self.subscribe_to_current_market().await?;
+
+        Ok(())
+    }
+
+    /// Runs a single connection lifecycle (connect, subscribe, process messages)
+    /// Returns (result, was_connection_stable)
+    async fn run_connection_loop(&mut self) -> (Result<()>, bool) {
+        // Connect
+        if let Err(e) = self.connect().await {
+            return (Err(e), false);
+        }
+        info!("🔗 WebSocket connected");
+
+        // Fetch/refresh market and subscribe
+        if let Err(e) = self.fetch_and_set_next_market().await {
+            return (Err(e), false);
+        }
+        if let Err(e) = self.subscribe_to_current_market().await {
+            return (Err(e), false);
+        }
 
         let (msg_tx, mut msg_rx) = mpsc::channel::<KalshiWsMessage>(100);
 
-        let ws = self.ws.as_ref()
-            .ok_or_else(|| Error::WebSocket("Not connected".into()))?
-            .clone();
+        let ws = match self.ws.as_ref() {
+            Some(ws) => ws.clone(),
+            None => return (Err(Error::WebSocket("Not connected".into())), false),
+        };
 
+        // Spawn WebSocket reader task
         let ws_handle = tokio::spawn(async move {
             loop {
                 let msg_result = {
@@ -120,9 +265,15 @@ impl KalshiClient {
         });
 
         info!("🧠 Starting state manager message processing");
+        
+        // Track if we received any messages (connection was stable)
+        let mut received_messages = false;
+        
+        // Process messages until channel closes
         loop {
             match msg_rx.recv().await {
                 Some(msg) => {
+                    received_messages = true;
                     if let Err(e) = self.handle_message(msg).await {
                         error!("Error handling message: {}", e);
                     }
@@ -135,7 +286,9 @@ impl KalshiClient {
         }
 
         let _ = ws_handle.await;
-        Ok(())
+        
+        // Return error to trigger reconnection, and whether we were stable
+        (Err(Error::WebSocket("Connection lost".into())), received_messages)
     }
 
     async fn handle_message(&mut self, msg: KalshiWsMessage) -> Result<()> {
@@ -262,6 +415,23 @@ impl KalshiClient {
               lifecycle_msg.market_ticker, new_status, lifecycle_msg.event_type);
 
         if new_status == KalshiMarketStatus::Closed || new_status == KalshiMarketStatus::Settled {
+            // Insert into market_info when market is closed with a result
+            if let Some(result) = &lifecycle_msg.result {
+                let strike_price = self.current_market
+                    .as_ref()
+                    .and_then(|m| m.extra.get("floor_strike"))
+                    .and_then(|v| v.as_f64());
+
+                if let Err(e) = self.db.insert_market_info(
+                    &lifecycle_msg.market_ticker,
+                    Utc::now(),
+                    strike_price,
+                    result,
+                ).await {
+                    error!("Failed to insert market info: {}", e);
+                }
+            }
+
             if let Some(current) = &self.current_market {
                 if current.ticker == lifecycle_msg.market_ticker {
                     info!("🔴 Current market {} closed, switching to next...", current.ticker);
@@ -323,6 +493,22 @@ impl KalshiClient {
         );
     }
 
+    /// Queues a market data update for batched insertion
+    fn queue_market_data_update(&self, ob: &KalshiOrderbook) {
+        let update = MarketDataUpdate {
+            ticker: ob.market_ticker.clone(),
+            timestamp: Utc::now(),
+            yes_ask: ob.yes_asks.first().map(|l| l.price).unwrap_or(0.0),
+            yes_bid: ob.yes_bids.first().map(|l| l.price).unwrap_or(0.0),
+            no_ask: ob.no_asks.first().map(|l| l.price).unwrap_or(0.0),
+            no_bid: ob.no_bids.first().map(|l| l.price).unwrap_or(0.0),
+        };
+
+        if let Err(e) = self.market_data_tx.try_send(update) {
+            error!("Failed to queue market data update: {}", e);
+        }
+    }
+
     fn process_orderbook_update(&self, ob: KalshiOrderbook) {
         // Update orderbook state (DashMap handles concurrency automatically)
         let mut existing = self.state.orderbooks.entry(ob.market_ticker.clone()).or_insert_with(|| {
@@ -353,6 +539,9 @@ impl KalshiClient {
         // Sort and log
         Self::sort_orderbook(&mut existing);
         Self::log_orderbook_summary(&existing);
+
+        // Queue for batched database insert
+        self.queue_market_data_update(&existing);
     }
 
     fn process_orderbook_delta(&self, delta: KalshiOrderbookDelta) {
@@ -398,6 +587,9 @@ impl KalshiClient {
         Self::derive_asks_from_bids(&mut existing);
         Self::sort_orderbook(&mut existing);
         Self::log_orderbook_summary(&existing);
+
+        // Queue for batched database insert
+        self.queue_market_data_update(&existing);
     }
 
     async fn subscribe_to_current_market(&mut self) -> Result<()> {

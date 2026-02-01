@@ -1,0 +1,20 @@
+# fly.toml app configuration file generated for white-shark on 2026-01-31T15:37:02+07:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'white-shark'
+primary_region = 'iad'
+
+[build]
+
+[env]
+  RUST_LOG = 'info,white_shark=debug'
+
+[processes]
+  app = '/app/white-shark'
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1

@@ -1,0 +1,31 @@
+# Build artifacts
+target/
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Environment files (secrets should be in Fly secrets)
+.env
+.env.*
+*.pem
+
+# Documentation
+*.md
+LICENSE
+
+# Misc
+*.txt
+.DS_Store
+Thumbs.db
+
+# Fly.io
+fly.toml
+
