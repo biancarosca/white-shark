@@ -374,3 +374,99 @@ impl KalshiMarketStatus {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrderSide {
+    Yes,
+    No,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrderAction {
+    Buy,
+    Sell,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrderType {
+    Market,
+    Limit,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateOrderRequest {
+    pub ticker: String,
+    pub action: OrderAction,
+    pub side: OrderSide,
+    #[serde(rename = "type")]
+    pub order_type: OrderType,
+    pub count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub yes_price: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub no_price: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiration_ts: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sell_position_floor: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buy_max_cost: Option<i64>,
+}
+
+impl CreateOrderRequest {
+    pub fn market_order(ticker: String, action: OrderAction, side: OrderSide, count: i64) -> Self {
+        Self {
+            ticker,
+            action,
+            side,
+            order_type: OrderType::Market,
+            count,
+            yes_price: None,
+            no_price: None,
+            expiration_ts: None,
+            sell_position_floor: None,
+            buy_max_cost: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateOrderResponse {
+    pub order: KalshiOrder,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct KalshiOrder {
+    pub order_id: String,
+    pub ticker: String,
+    pub action: String,
+    pub side: String,
+    #[serde(rename = "type")]
+    pub order_type: String,
+    pub status: String,
+    #[serde(default)]
+    pub yes_price: Option<i64>,
+    #[serde(default)]
+    pub no_price: Option<i64>,
+    #[serde(default)]
+    pub created_time: Option<String>,
+    #[serde(default)]
+    pub expiration_time: Option<String>,
+    #[serde(default)]
+    pub close_cancel_count: Option<i64>,
+    #[serde(default)]
+    pub place_count: Option<i64>,
+    #[serde(default)]
+    pub decrease_count: Option<i64>,
+    #[serde(default)]
+    pub maker_fill_count: Option<i64>,
+    #[serde(default)]
+    pub taker_fill_count: Option<i64>,
+    #[serde(default)]
+    pub taker_fill_cost: Option<i64>,
+    #[serde(default)]
+    pub taker_fees: Option<i64>,
+}

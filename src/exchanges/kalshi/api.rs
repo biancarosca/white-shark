@@ -1,9 +1,11 @@
-use std::collections::HashMap;
-
 use reqwest::Client as HttpClient;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use super::auth::KalshiAuth;
-use super::models::*;
+use super::models::{
+    CreateOrderRequest, CreateOrderResponse, KalshiMarket, MarketsResponse,
+    OrderAction, OrderSide,
+};
 use crate::error::{Error, Result};
 use crate::constants::KALSHI_REST_URL;
 
@@ -20,12 +22,21 @@ impl KalshiApi {
         }
     }
 
-    fn auth_headers(&self, method: &str, path: &str) -> Result<HashMap<String, String>> {
+    fn auth_headers(&self, method: &str, path: &str) -> Result<HeaderMap> {
         let headers = self.auth.generate_headers(method, path)?;
-        let mut map = HashMap::new();
-        map.insert("KALSHI-ACCESS-KEY".to_string(), headers.api_key);
-        map.insert("KALSHI-ACCESS-TIMESTAMP".to_string(), headers.timestamp);
-        map.insert("KALSHI-ACCESS-SIGNATURE".to_string(), headers.signature);
+        let mut map = HeaderMap::new();
+        map.insert(
+            HeaderName::from_static("kalshi-access-key"),
+            HeaderValue::from_str(&headers.api_key).map_err(|e| Error::Http(e.to_string()))?,
+        );
+        map.insert(
+            HeaderName::from_static("kalshi-access-timestamp"),
+            HeaderValue::from_str(&headers.timestamp).map_err(|e| Error::Http(e.to_string()))?,
+        );
+        map.insert(
+            HeaderName::from_static("kalshi-access-signature"),
+            HeaderValue::from_str(&headers.signature).map_err(|e| Error::Http(e.to_string()))?,
+        );
         Ok(map)
     }
 
@@ -59,14 +70,12 @@ impl KalshiApi {
         }
         
         let auth_path = "/trade-api/v2/markets";
-        let auth = self.auth_headers("GET", auth_path)?;
+        let auth_headers = self.auth_headers("GET", auth_path)?;
 
         let resp = self
             .http
             .get(&url)
-            .header("KALSHI-ACCESS-KEY", &auth["KALSHI-ACCESS-KEY"])
-            .header("KALSHI-ACCESS-TIMESTAMP", &auth["KALSHI-ACCESS-TIMESTAMP"])
-            .header("KALSHI-ACCESS-SIGNATURE", &auth["KALSHI-ACCESS-SIGNATURE"])
+            .headers(auth_headers)
             .send()
             .await
             .map_err(|e| Error::Http(e.to_string()))?;
@@ -129,5 +138,54 @@ impl KalshiApi {
             all_markets.push(markets[0].clone());
         }
         Ok(all_markets)
+    }
+
+    /// Create a market order on Kalshi
+    /// 
+    /// # Arguments
+    /// * `ticker` - The market ticker (e.g., "KXBTC-25JAN31-B55000")
+    /// * `action` - Buy or Sell
+    /// * `side` - Yes or No
+    /// * `count` - Number of contracts
+    pub async fn create_market_order(
+        &self,
+        ticker: &str,
+        action: OrderAction,
+        side: OrderSide,
+        count: i64,
+    ) -> Result<CreateOrderResponse> {
+        let request = CreateOrderRequest::market_order(
+            ticker.to_string(),
+            action,
+            side,
+            count,
+        );
+
+        let url_path = "/portfolio/orders";
+        let url = format!("{}{}", KALSHI_REST_URL, url_path);
+        let auth_path = "/trade-api/v2/portfolio/orders";
+        let auth_headers = self.auth_headers("POST", auth_path)?;
+
+        let resp = self
+            .http
+            .post(&url)
+            .headers(auth_headers)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Http(format!("HTTP {}: {}", status, body)));
+        }
+
+        let data: CreateOrderResponse = resp
+            .json()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
+
+        Ok(data)
     }
 }
