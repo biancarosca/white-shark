@@ -1,12 +1,24 @@
-use sea_orm::{Database, DatabaseConnection, ActiveValue, EntityTrait};
+use sea_orm::{Database, DatabaseConnection, ActiveValue, EntityTrait, FromQueryResult, Statement, DbBackend};
 use sea_query::{Table, ColumnDef, MysqlQueryBuilder, Index, Alias};
 use tracing::info;
 use chrono::Utc;
 use rust_decimal::Decimal;
 use std::str::FromStr;
+use std::path::Path;
+use std::io::Write;
 
 use crate::error::{Error, Result};
 use crate::db::{market_data, market_info};
+
+#[derive(Debug, Clone, FromQueryResult)]
+pub struct MarketDataRow {
+    pub timestamp: chrono::DateTime<Utc>,
+    pub ticker: String,
+    pub yes_ask: Option<Decimal>,
+    pub yes_bid: Option<Decimal>,
+    pub no_ask: Option<Decimal>,
+    pub no_bid: Option<Decimal>,
+}
 
 pub struct Db {
     connection: DatabaseConnection,
@@ -255,6 +267,81 @@ impl Db {
             .map_err(|e| Error::Database(format!("Failed to insert market info: {}", e)))?;
     
         Ok(())
+    }
+
+    /// Fetches all market data for a ticker and appends it to a CSV file
+    /// Uses pagination to handle query limits (fetches in batches of 500)
+    pub async fn export_ticker_to_csv(&self, ticker: &str, csv_path: &str) -> Result<usize> {
+        const BATCH_SIZE: i64 = 500;
+        
+        let path = Path::new(csv_path);
+        let file_exists = path.exists();
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| Error::Database(format!("Failed to open CSV file: {}", e)))?;
+
+        // Write header if file is new
+        if !file_exists {
+            writeln!(file, "timestamp,ticker,yes_ask,yes_bid,no_ask,no_bid")
+                .map_err(|e| Error::Database(format!("Failed to write CSV header: {}", e)))?;
+        }
+
+        let mut total_count: usize = 0;
+        let mut offset: i64 = 0;
+
+        loop {
+            let sql = r#"
+                SELECT timestamp, ticker, yes_ask, yes_bid, no_ask, no_bid
+                FROM market_data
+                WHERE ticker = ?
+                ORDER BY timestamp ASC
+                LIMIT ? OFFSET ?
+            "#;
+
+            let stmt = Statement::from_sql_and_values(
+                DbBackend::MySql,
+                sql,
+                vec![ticker.into(), BATCH_SIZE.into(), offset.into()]
+            );
+
+            let rows = MarketDataRow::find_by_statement(stmt)
+                .all(&self.connection)
+                .await
+                .map_err(|e| Error::Database(format!("Failed to fetch market data: {}", e)))?;
+
+            let batch_count = rows.len();
+            if batch_count == 0 {
+                break;
+            }
+
+            for row in rows {
+                let line = format!(
+                    "{},{},{},{},{},{}",
+                    row.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                    row.ticker,
+                    row.yes_ask.map(|d| d.to_string()).unwrap_or_default(),
+                    row.yes_bid.map(|d| d.to_string()).unwrap_or_default(),
+                    row.no_ask.map(|d| d.to_string()).unwrap_or_default(),
+                    row.no_bid.map(|d| d.to_string()).unwrap_or_default(),
+                );
+                writeln!(file, "{}", line)
+                    .map_err(|e| Error::Database(format!("Failed to write CSV row: {}", e)))?;
+            }
+
+            total_count += batch_count;
+            offset += BATCH_SIZE;
+
+            // If we got fewer than BATCH_SIZE, we've reached the end
+            if batch_count < BATCH_SIZE as usize {
+                break;
+            }
+        }
+
+        info!("✅ Exported {} rows for ticker {} to {}", total_count, ticker, csv_path);
+        Ok(total_count)
     }
 }
 
