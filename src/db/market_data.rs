@@ -10,6 +10,8 @@ pub struct Model {
     
     pub ticker: String,
     
+    pub asset: String,
+    
     pub timestamp: DateTime<Utc>,
     
     #[sea_orm(nullable)]

@@ -58,6 +58,11 @@ impl Db {
                     .not_null()
             )
             .col(
+                ColumnDef::new(Alias::new("asset"))
+                    .string_len(50)
+                    .not_null()
+            )
+            .col(
                 ColumnDef::new(Alias::new("ticker"))
                     .string_len(50)
                     .not_null()
@@ -158,6 +163,7 @@ impl Db {
     pub async fn insert_market_data(
         &self,
         ticker: &str,
+        asset: &str,
         timestamp: chrono::DateTime<Utc>,
         yes_ask: f64,
         yes_bid: f64,
@@ -166,6 +172,7 @@ impl Db {
     ) -> Result<()> {
         let active_model = Self::create_market_data_active_model(
             ticker,
+            asset,
             timestamp,
             yes_ask,
             yes_bid,
@@ -183,7 +190,7 @@ impl Db {
 
     pub async fn insert_market_data_batch(
         &self,
-        records: Vec<(String, chrono::DateTime<Utc>, f64, f64, f64, f64)>,
+        records: Vec<(String, String, chrono::DateTime<Utc>, f64, f64, f64, f64)>,
     ) -> Result<()> {
         if records.is_empty() {
             return Ok(());
@@ -191,8 +198,8 @@ impl Db {
 
         let active_models: Vec<market_data::ActiveModel> = records
             .into_iter()
-            .map(|(ticker, timestamp, yes_ask, yes_bid, no_ask, no_bid)| {
-                Self::create_market_data_active_model(&ticker, timestamp, yes_ask, yes_bid, no_ask, no_bid)
+            .map(|(ticker, asset, timestamp, yes_ask, yes_bid, no_ask, no_bid)| {
+                Self::create_market_data_active_model(&ticker, &asset, timestamp, yes_ask, yes_bid, no_ask, no_bid)
             })
             .collect();
 
@@ -207,6 +214,7 @@ impl Db {
 
     fn create_market_data_active_model(
         ticker: &str,
+        asset: &str,
         timestamp: chrono::DateTime<Utc>,
         yes_ask: f64,
         yes_bid: f64,
@@ -220,6 +228,7 @@ impl Db {
         market_data::ActiveModel {
             id: ActiveValue::NotSet,
             ticker: ActiveValue::Set(ticker.to_string()),
+            asset: ActiveValue::Set(asset.to_string()),
             timestamp: ActiveValue::Set(timestamp),
             yes_ask: ActiveValue::Set(to_decimal(yes_ask)),
             yes_bid: ActiveValue::Set(to_decimal(yes_bid)),
