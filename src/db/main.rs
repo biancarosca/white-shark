@@ -14,10 +14,16 @@ use crate::db::{market_data, market_info};
 pub struct MarketDataRow {
     pub timestamp: chrono::DateTime<Utc>,
     pub ticker: String,
-    pub yes_ask: Option<Decimal>,
-    pub yes_bid: Option<Decimal>,
-    pub no_ask: Option<Decimal>,
-    pub no_bid: Option<Decimal>,
+    pub asset: String,
+    pub yes_ask: f64,
+    pub yes_bid: f64,
+    pub no_ask: f64,
+    pub no_bid: f64,
+}
+
+#[derive(Debug, Clone, FromQueryResult)]
+pub struct TickerRow {
+    pub ticker: String,
 }
 
 pub struct Db {
@@ -278,32 +284,62 @@ impl Db {
         Ok(())
     }
 
-    /// Fetches all market data for a ticker and appends it to a CSV file
-    /// Uses pagination to handle query limits (fetches in batches of 500)
-    pub async fn export_ticker_to_csv(&self, ticker: &str, csv_path: &str) -> Result<usize> {
+    pub async fn fetch_all_tickers(&self) -> Result<Vec<String>> {
         const BATCH_SIZE: i64 = 500;
-        
-        let path = Path::new(csv_path);
-        let file_exists = path.exists();
 
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .map_err(|e| Error::Database(format!("Failed to open CSV file: {}", e)))?;
-
-        // Write header if file is new
-        if !file_exists {
-            writeln!(file, "timestamp,ticker,yes_ask,yes_bid,no_ask,no_bid")
-                .map_err(|e| Error::Database(format!("Failed to write CSV header: {}", e)))?;
-        }
-
-        let mut total_count: usize = 0;
+        let mut all_tickers = Vec::new();
         let mut offset: i64 = 0;
+ 
+        loop {
+            let sql = r#"
+                SELECT DISTINCT ticker
+                FROM market_data
+                ORDER BY ticker ASC
+                LIMIT ? OFFSET ?
+            "#;
+
+            let stmt = Statement::from_sql_and_values(
+                DbBackend::MySql,
+                sql,
+                vec![BATCH_SIZE.into(), offset.into()]
+            );
+
+            let batch_rows = TickerRow::find_by_statement(stmt)
+                .all(&self.connection)
+                .await
+                .map_err(|e| Error::Database(format!("Failed to fetch all tickers: {}", e)))?;
+
+            let batch_count = batch_rows.len();
+            if batch_count == 0 {
+                return Ok(all_tickers);
+            }
+
+            all_tickers.extend(batch_rows.into_iter().map(|r| r.ticker));
+
+            offset += BATCH_SIZE;
+
+            if batch_count < BATCH_SIZE as usize {
+                return Ok(all_tickers);
+            }
+        }
+    }
+
+    pub async fn fetch_ticker_market_data(&self, ticker: &str) -> Result<Vec<MarketDataRow>> {
+        const BATCH_SIZE: i64 = 500;
+
+        let mut offset: i64 = 0;
+        let mut rows: Vec<MarketDataRow> = Vec::new();
 
         loop {
             let sql = r#"
-                SELECT timestamp, ticker, yes_ask, yes_bid, no_ask, no_bid
+                SELECT
+                  timestamp,
+                  ticker,
+                  asset,
+                  CAST(yes_ask AS DOUBLE) AS yes_ask,
+                  CAST(yes_bid AS DOUBLE) AS yes_bid,
+                  CAST(no_ask AS DOUBLE) AS no_ask,
+                  CAST(no_bid AS DOUBLE) AS no_bid
                 FROM market_data
                 WHERE ticker = ?
                 ORDER BY timestamp ASC
@@ -316,37 +352,55 @@ impl Db {
                 vec![ticker.into(), BATCH_SIZE.into(), offset.into()]
             );
 
-            let rows = MarketDataRow::find_by_statement(stmt)
+            let batch_rows = MarketDataRow::find_by_statement(stmt)
                 .all(&self.connection)
                 .await
                 .map_err(|e| Error::Database(format!("Failed to fetch market data: {}", e)))?;
 
-            let batch_count = rows.len();
+            let batch_count = batch_rows.len();
             if batch_count == 0 {
-                break;
+                return Ok(batch_rows);
             }
 
-            for row in rows {
-                let line = format!(
-                    "{},{},{},{},{},{}",
-                    row.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                    row.ticker,
-                    row.yes_ask.map(|d| d.to_string()).unwrap_or_default(),
-                    row.yes_bid.map(|d| d.to_string()).unwrap_or_default(),
-                    row.no_ask.map(|d| d.to_string()).unwrap_or_default(),
-                    row.no_bid.map(|d| d.to_string()).unwrap_or_default(),
-                );
-                writeln!(file, "{}", line)
-                    .map_err(|e| Error::Database(format!("Failed to write CSV row: {}", e)))?;
-            }
+            rows.extend(batch_rows);
 
-            total_count += batch_count;
             offset += BATCH_SIZE;
 
-            // If we got fewer than BATCH_SIZE, we've reached the end
             if batch_count < BATCH_SIZE as usize {
-                break;
+                return Ok(rows);
             }
+        }
+    }
+
+    pub async fn export_ticker_to_csv(&self, ticker: &str, csv_path: &str) -> Result<usize> {
+        let path = Path::new(csv_path);
+        let file_exists = path.exists();
+
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|e| Error::Database(format!("Failed to open CSV file: {}", e)))?;
+
+        if !file_exists {
+            writeln!(file, "timestamp,ticker,yes_ask,yes_bid,no_ask,no_bid")
+                .map_err(|e| Error::Database(format!("Failed to write CSV header: {}", e)))?;
+        }
+
+
+        let rows = self.fetch_ticker_market_data(ticker).await?;
+
+        let total_count = rows.len();
+
+        for row in rows {
+            writeln!(file, "{},{},{},{},{},{}",
+                row.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                row.ticker,
+                row.yes_ask.to_string(),
+                row.yes_bid.to_string(),
+                row.no_ask.to_string(),
+                row.no_bid.to_string(),
+            ).map_err(|e| Error::Database(format!("Failed to write CSV row: {}", e)))?;
         }
 
         info!("✅ Exported {} rows for ticker {} to {}", total_count, ticker, csv_path);
