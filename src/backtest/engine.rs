@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
 use tracing::info;
 
 use crate::db::main::{Db, MarketDataRow};
@@ -46,13 +46,14 @@ pub struct BacktestEngine {
     asset: Option<String>,
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
+    market_end: Option<DateTime<Utc>>,
 }
 
 const STEP: f64 = 0.05;
 const INITIAL_WALLET_BALANCE: f64 = 100.0;
 const LADDER_LENGTH: usize = 10;
 const DOLLAR_PER_ORDER: f64 = 5.0;
-const REBALANCE_SUM: f64 = 0.98;
+const REBALANCE_SUM: f64 = 0.95;
 
 fn round_to_nearest_cent(price: f64) -> f64 {
     (price * 100.0).round() / 100.0
@@ -80,7 +81,8 @@ impl BacktestEngine {
             filled_no_orders: Vec::new(),
             asset: None,
             last_yes_ask: None,
-            last_no_ask: None
+            last_no_ask: None,
+            market_end: None
         }
     }
 
@@ -146,35 +148,44 @@ impl BacktestEngine {
 
     pub fn handle_orders(&mut self, yes_ask: f64, no_ask: f64, timestamp: DateTime<Utc>) {
         let mut open_orders_dollars = 0.0;
-        // if let Some(open_order) = &self.open_yes_rebalance {
-        //     open_orders_dollars += open_order.price * open_order.contracts;
-        //     if yes_ask < open_order.price {
-        //         self.filled_yes_orders.push(FilledOrder {
-        //             price: open_order.price,
-        //             contracts: open_order.contracts,
-        //             trade_type: TradeType::REBALANCE,
-        //             trade_side: TradeSide::YES,
-        //             timestamp,
-        //         });
-        //         self.open_yes_rebalance = None;
-        //     }
-        // }
+        if let Some(open_order) = &self.open_yes_rebalance {
+            open_orders_dollars += open_order.price * open_order.contracts;
+            if yes_ask < open_order.price && yes_ask > 0.0 {
+                self.filled_yes_orders.push(FilledOrder {
+                    price: open_order.price,
+                    contracts: open_order.contracts,
+                    trade_type: TradeType::REBALANCE,
+                    trade_side: TradeSide::YES,
+                    timestamp,
+                });
+                self.open_yes_rebalance = None;
+            }
+        }
 
-        // if let Some(open_order) = &self.open_no_rebalance {
-        //     open_orders_dollars += open_order.price * open_order.contracts;
-        //     if no_ask < open_order.price {
-        //         self.filled_no_orders.push(FilledOrder {
-        //             price: open_order.price,
-        //             contracts: open_order.contracts,
-        //             trade_type: TradeType::REBALANCE,
-        //             trade_side: TradeSide::NO,
-        //             timestamp,
-        //         });
-        //         self.open_no_rebalance = None;
-        //     }
-        // }
+        if let Some(open_order) = &self.open_no_rebalance {
+            open_orders_dollars += open_order.price * open_order.contracts;
+            if no_ask < open_order.price && no_ask > 0.0 {
+                self.filled_no_orders.push(FilledOrder {
+                    price: open_order.price,
+                    contracts: open_order.contracts,
+                    trade_type: TradeType::REBALANCE,
+                    trade_side: TradeSide::NO,
+                    timestamp,
+                });
+                self.open_no_rebalance = None;
+            }
+        }
 
-        if self.balance < DOLLAR_PER_ORDER || self.balance < open_orders_dollars {
+        // check if we are in the last 5 minutes of the market, no more ladder orders allowed, only rebalance allowed
+        if let Some(market_end) = self.market_end {
+            if timestamp > market_end - Duration::minutes(5) {
+                return;
+            }
+        }
+
+        let waiting_for_hedge = self.open_yes_rebalance.is_some() || self.open_no_rebalance.is_some();
+
+        if self.balance < DOLLAR_PER_ORDER || self.balance < open_orders_dollars || waiting_for_hedge {
             return;
         }
 
@@ -213,64 +224,64 @@ impl BacktestEngine {
         self.no_ladder.retain(|p| !filled_no_prices.contains(p));
     }
 
-    // pub fn rebalance(&mut self) {
-    //     let total_filled_yes_contracts = self
-    //         .filled_yes_orders
-    //         .iter()
-    //         .map(|o| o.contracts)
-    //         .sum::<f64>();
-    //     let total_filled_no_contracts = self
-    //         .filled_no_orders
-    //         .iter()
-    //         .map(|o| o.contracts)
-    //         .sum::<f64>();
+    pub fn rebalance(&mut self) {
+        let total_filled_yes_contracts = self
+            .filled_yes_orders
+            .iter()
+            .map(|o| o.contracts)
+            .sum::<f64>();
+        let total_filled_no_contracts = self
+            .filled_no_orders
+            .iter()
+            .map(|o| o.contracts)
+            .sum::<f64>();
 
-    //     let diff = total_filled_yes_contracts - total_filled_no_contracts;
+        let diff = total_filled_yes_contracts - total_filled_no_contracts;
 
-    //     if diff == 0.0 {
-    //         return;
-    //     }
+        if diff == 0.0 {
+            return;
+        }
 
-    //     if diff > 0.0 {
-    //         self.open_yes_rebalance = None;
+        if diff > 0.0 {
+            self.open_yes_rebalance = None;
 
-    //         let mut count = 0.0;
-    //         let mut total_cost = 0.0;
+            let mut count = 0.0;
+            let mut total_cost = 0.0;
 
-    //         for order in self.filled_yes_orders.iter().rev() {
-    //             let remaining = diff - count;
-    //             if remaining <= 0.0 { break; }
+            for order in self.filled_yes_orders.iter().rev() {
+                let remaining = diff - count;
+                if remaining <= 0.0 { break; }
                 
-    //             let take = order.contracts.min(remaining);
-    //             total_cost += take * order.price;
-    //             count += take;
-    //         }
+                let take = order.contracts.min(remaining);
+                total_cost += take * order.price;
+                count += take;
+            }
 
-    //         self.open_no_rebalance = Some(OpenOrder {
-    //             price: round_to_nearest_cent(REBALANCE_SUM - total_cost / diff),
-    //             contracts: diff,
-    //         });
-    //     } else {
-    //         self.open_no_rebalance = None;
+            self.open_no_rebalance = Some(OpenOrder {
+                price: round_to_nearest_cent(REBALANCE_SUM - total_cost / diff),
+                contracts: diff,
+            });
+        } else {
+            self.open_no_rebalance = None;
 
-    //         let mut count = 0.0;
-    //         let mut total_cost = 0.0;
+            let mut count = 0.0;
+            let mut total_cost = 0.0;
 
-    //         for order in self.filled_no_orders.iter().rev() {
-    //             let remaining = diff.abs() - count;
-    //             if remaining <= 0.0 { break; }
+            for order in self.filled_no_orders.iter().rev() {
+                let remaining = diff.abs() - count;
+                if remaining <= 0.0 { break; }
                 
-    //             let take = order.contracts.min(remaining);
-    //             total_cost += take * order.price;
-    //             count += take;
-    //         }
+                let take = order.contracts.min(remaining);
+                total_cost += take * order.price;
+                count += take;
+            }
 
-    //         self.open_yes_rebalance = Some(OpenOrder {
-    //             price: round_to_nearest_cent(REBALANCE_SUM - total_cost / diff.abs()),
-    //             contracts: diff.abs(),
-    //         });
-    //     }
-    // }
+            self.open_yes_rebalance = Some(OpenOrder {
+                price: round_to_nearest_cent(REBALANCE_SUM - total_cost / diff.abs()),
+                contracts: diff.abs(),
+            });
+        }
+    }
 
     pub fn set_last_asks(&mut self, yes_ask: f64, no_ask: f64) {
         if yes_ask > 0.0 {
@@ -284,7 +295,7 @@ impl BacktestEngine {
     pub fn process_tick(&mut self, tick: &MarketDataRow) {
         self.handle_ladders(tick.yes_ask, tick.no_ask);
         self.handle_orders(tick.yes_ask, tick.no_ask, tick.timestamp);
-        // self.rebalance();
+        self.rebalance();
         self.set_last_asks(tick.yes_ask, tick.no_ask);
     }
 
@@ -298,6 +309,9 @@ impl BacktestEngine {
         self.filled_no_orders = Vec::new();
         self.last_no_ask = None;
         self.last_yes_ask = None;
+        self.open_yes_rebalance = None;
+        self.open_no_rebalance = None;
+        self.market_end = None;
     }
 
     pub fn filled_yes_contracts(&self) -> f64 {
@@ -400,6 +414,11 @@ impl BacktestEngine {
 
             self.asset = Some(market_data[0].asset.clone());
             self.reset();
+            
+            let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+            //calc 15 min from first timestamp
+            let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
+            self.market_end = Some(fifteen_min_from_first_timestamp);
 
             let total_rows = market_data.len();
             for tick in market_data.iter() {
@@ -410,7 +429,7 @@ impl BacktestEngine {
                 .expect("append backtest result to CSV");
         }
 
-        // let csv_name = "1.csv";
+        // let csv_name = "2.csv";
         // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
         // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
 
@@ -421,6 +440,11 @@ impl BacktestEngine {
 
         // // self.asset = market_data.first().map(|r| r.ticker.clone());
         // // self.reset();
+
+        // let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+        // //calc 15 min from first timestamp
+        // let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
+        // self.market_end = Some(fifteen_min_from_first_timestamp);
 
         // for tick in &market_data {
         //     self.process_tick(tick);
