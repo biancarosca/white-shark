@@ -394,7 +394,7 @@ impl BacktestEngine {
 
         let csv_path = "backtest_results.csv";
 
-        for ticker in tickers.iter().take(100) {
+        for ticker in tickers.iter() {
             let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
             info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
