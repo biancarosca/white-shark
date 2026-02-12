@@ -128,10 +128,13 @@ impl BacktestEngine {
     }
 
     pub fn handle_ladders(&mut self, yes_ask: f64, no_ask: f64) {
+        if yes_ask > 0.60 && no_ask > 0.60 {
+            return;
+        }
         if self.yes_ladder_anchor_price.is_none() {
             self.yes_ladder_anchor_price = Some(yes_ask);
             self.yes_ladder = self.create_ladder(yes_ask, true);
-            info!("Yes ladder: {:?}", self.yes_ladder);
+            info!("Yes ladder: {:?}", self.yes_ladder);   
         }
         if self.no_ladder_anchor_price.is_none() {
             self.no_ladder_anchor_price = Some(no_ask);
@@ -346,7 +349,7 @@ impl BacktestEngine {
         let total_no = self.filled_no_contracts();
         let avg_yes = self.calculate_avg_yes_price().unwrap_or(0.0);
         let avg_no = self.calculate_avg_no_price().unwrap_or(0.0);
-        let total_cost = avg_yes + avg_no;
+        let total_cost = round_to_nearest_cent(avg_yes + avg_no);
 
         let header = "ticker,total_rows_processed,balance_remaining,filled_yes_contracts,filled_no_contracts,avg_price_yes,avg_price_no,total_cost,last_yes_ask,last_no_ask\n";
         let row = format!(
