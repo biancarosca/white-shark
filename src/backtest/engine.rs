@@ -46,6 +46,7 @@ pub struct BacktestEngine {
     asset: Option<String>,
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
+    row_index: usize
 }
 
 const STEP: f64 = 0.05;
@@ -81,6 +82,7 @@ impl BacktestEngine {
             asset: None,
             last_yes_ask: None,
             last_no_ask: None,
+            row_index: 0
         }
     }
 
@@ -128,7 +130,7 @@ impl BacktestEngine {
     }
 
     pub fn handle_ladders(&mut self, yes_ask: f64, no_ask: f64) {
-        if yes_ask > 0.60 && no_ask > 0.60 {
+        if (yes_ask > 0.60 && no_ask > 0.60) || self.row_index < 5 {
             return;
         }
         if self.yes_ladder_anchor_price.is_none() {
@@ -295,6 +297,9 @@ impl BacktestEngine {
         self.no_ladder = Vec::new();
         self.filled_yes_orders = Vec::new();
         self.filled_no_orders = Vec::new();
+        self.last_no_ask = None;
+        self.last_yes_ask = None;
+        self.row_index = 0;
     }
 
     pub fn filled_yes_contracts(&self) -> f64 {
@@ -399,7 +404,8 @@ impl BacktestEngine {
             self.reset();
 
             let total_rows = market_data.len();
-            for tick in &market_data {
+            for (i, tick) in market_data.iter().enumerate() {
+                self.row_index = i;
                 self.process_tick(tick);
             }
 
