@@ -46,7 +46,6 @@ pub struct BacktestEngine {
     asset: Option<String>,
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
-    row_index: usize
 }
 
 const STEP: f64 = 0.05;
@@ -81,8 +80,7 @@ impl BacktestEngine {
             filled_no_orders: Vec::new(),
             asset: None,
             last_yes_ask: None,
-            last_no_ask: None,
-            row_index: 0
+            last_no_ask: None
         }
     }
 
@@ -130,18 +128,19 @@ impl BacktestEngine {
     }
 
     pub fn handle_ladders(&mut self, yes_ask: f64, no_ask: f64) {
-        if (yes_ask > 0.60 && no_ask > 0.60) || self.row_index < 5 {
-            return;
-        }
         if self.yes_ladder_anchor_price.is_none() {
-            self.yes_ladder_anchor_price = Some(yes_ask);
-            self.yes_ladder = self.create_ladder(yes_ask, true);
-            info!("Yes ladder: {:?}", self.yes_ladder);   
+            if yes_ask < 0.60 {
+                self.yes_ladder_anchor_price = Some(yes_ask);
+                self.yes_ladder = self.create_ladder(yes_ask, true);
+                info!("Yes ladder: {:?}", self.yes_ladder);   
+            }
         }
         if self.no_ladder_anchor_price.is_none() {
-            self.no_ladder_anchor_price = Some(no_ask);
-            self.no_ladder = self.create_ladder(no_ask, false);
-            info!("No ladder: {:?}", self.no_ladder);
+            if no_ask < 0.60 {
+                self.no_ladder_anchor_price = Some(no_ask);
+                self.no_ladder = self.create_ladder(no_ask, false);
+                info!("No ladder: {:?}", self.no_ladder);
+            }
         }
     }
 
@@ -299,7 +298,6 @@ impl BacktestEngine {
         self.filled_no_orders = Vec::new();
         self.last_no_ask = None;
         self.last_yes_ask = None;
-        self.row_index = 0;
     }
 
     pub fn filled_yes_contracts(&self) -> f64 {
@@ -404,8 +402,7 @@ impl BacktestEngine {
             self.reset();
 
             let total_rows = market_data.len();
-            for (i, tick) in market_data.iter().enumerate() {
-                self.row_index = i;
+            for tick in market_data.iter() {
                 self.process_tick(tick);
             }
 
