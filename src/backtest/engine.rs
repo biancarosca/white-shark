@@ -129,14 +129,14 @@ impl BacktestEngine {
 
     pub fn handle_ladders(&mut self, yes_ask: f64, no_ask: f64) {
         if self.yes_ladder_anchor_price.is_none() {
-            if yes_ask < 0.60 {
+            if yes_ask < 0.60 && yes_ask > 0.0{
                 self.yes_ladder_anchor_price = Some(yes_ask);
                 self.yes_ladder = self.create_ladder(yes_ask, true);
                 info!("Yes ladder: {:?}", self.yes_ladder);   
             }
         }
         if self.no_ladder_anchor_price.is_none() {
-            if no_ask < 0.60 {
+            if no_ask < 0.60 && no_ask > 0.0 {
                 self.no_ladder_anchor_price = Some(no_ask);
                 self.no_ladder = self.create_ladder(no_ask, false);
                 info!("No ladder: {:?}", self.no_ladder);
