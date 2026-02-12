@@ -176,9 +176,9 @@ impl BacktestEngine {
             }
         }
 
-        // check if we are in the last 5 minutes of the market, no more ladder orders allowed, only rebalance allowed
+        // check if we are in the last 8 minutes of the market, no more ladder orders allowed, only rebalance allowed
         if let Some(market_end) = self.market_end {
-            if timestamp > market_end - Duration::minutes(5) {
+            if timestamp > market_end - Duration::minutes(8) {
                 return;
             }
         }
