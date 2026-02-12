@@ -13,9 +13,10 @@ RUN apt-get update && apt-get install -y \
 COPY Cargo.toml Cargo.lock ./
 
 # Create dummy src to build dependencies
-RUN mkdir src && \
+RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/main.rs && \
-    echo "pub fn dummy() {}" > src/lib.rs
+    echo "pub fn dummy() {}" > src/lib.rs && \
+    echo "fn main() {}" > src/bin/backtest.rs
 
 # Build dependencies (cached layer)
 RUN cargo build --release && rm -rf src
@@ -27,7 +28,7 @@ COPY src ./src
 RUN touch src/main.rs src/lib.rs
 
 # Build the actual application
-RUN cargo build --release
+RUN cargo build --release --bin white-shark
 
 # Runtime stage
 FROM debian:bookworm-slim
