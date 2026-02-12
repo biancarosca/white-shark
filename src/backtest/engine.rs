@@ -180,7 +180,7 @@ impl BacktestEngine {
 
         let mut filled_yes_prices = Vec::new();
         for yes_price in &self.yes_ladder {
-            if yes_ask < *yes_price {
+            if yes_ask < *yes_price && yes_ask > 0.0 {
                 let contracts = DOLLAR_PER_ORDER / *yes_price;
                 self.balance -= DOLLAR_PER_ORDER;
                 self.filled_yes_orders.push(FilledOrder {
@@ -197,7 +197,7 @@ impl BacktestEngine {
 
         let mut filled_no_prices = Vec::new();
         for no_price in &self.no_ladder {
-            if no_ask < *no_price {
+            if no_ask < *no_price && no_ask > 0.0 {
                 let contracts = DOLLAR_PER_ORDER / *no_price;
                 self.balance -= DOLLAR_PER_ORDER;
                 self.filled_no_orders.push(FilledOrder {
@@ -394,7 +394,7 @@ impl BacktestEngine {
 
         let csv_path = "backtest_results.csv";
 
-        for ticker in tickers.iter() {
+        for ticker in tickers.iter().take(100) {
             let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
             info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
@@ -410,7 +410,7 @@ impl BacktestEngine {
                 .expect("append backtest result to CSV");
         }
 
-        // let csv_name = "2.csv";
+        // let csv_name = "1.csv";
         // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
         // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
 
@@ -419,8 +419,8 @@ impl BacktestEngine {
         //     return;
         // }
 
-        // self.asset = market_data.first().map(|r| r.ticker.clone());
-        // self.reset();
+        // // self.asset = market_data.first().map(|r| r.ticker.clone());
+        // // self.reset();
 
         // for tick in &market_data {
         //     self.process_tick(tick);
