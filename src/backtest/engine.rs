@@ -49,10 +49,10 @@ pub struct BacktestEngine {
     market_end: Option<DateTime<Utc>>,
 }
 
-const STEP: f64 = 0.05;
+const STEP: f64 = 0.02;
 const INITIAL_WALLET_BALANCE: f64 = 100.0;
-const LADDER_LENGTH: usize = 10;
-const DOLLAR_PER_ORDER: f64 = 5.0;
+const LADDER_LENGTH: usize = 20;
+const DOLLAR_PER_ORDER: f64 = 3.0;
 const REBALANCE_SUM: f64 = 0.95;
 
 fn round_to_nearest_cent(price: f64) -> f64 {
@@ -176,9 +176,9 @@ impl BacktestEngine {
             }
         }
 
-        // check if we are in the last 8 minutes of the market, no more ladder orders allowed, only rebalance allowed
+        // check if we are in the last 5 minutes of the market, no more ladder orders allowed, only rebalance allowed
         if let Some(market_end) = self.market_end {
-            if timestamp > market_end - Duration::minutes(8) {
+            if timestamp > market_end - Duration::minutes(5) {
                 return;
             }
         }
@@ -322,39 +322,39 @@ impl BacktestEngine {
         self.filled_no_orders.iter().map(|o| o.contracts).sum()
     }
 
-    // pub fn log_results(&self) {
-    //     info!("Asset: {:?}", self.asset);
-    //     info!("Balance remaining: {}", self.balance);
+    pub fn log_results(&self) {
+        info!("Asset: {:?}", self.asset);
+        info!("Balance remaining: {}", self.balance);
 
-    //     let mut all_orders: Vec<&FilledOrder> = self.filled_yes_orders.iter()
-    //         .chain(self.filled_no_orders.iter())
-    //         .collect();
+        let mut all_orders: Vec<&FilledOrder> = self.filled_yes_orders.iter()
+            .chain(self.filled_no_orders.iter())
+            .collect();
 
-    //     all_orders.sort_by_key(|o| o.timestamp);
+        all_orders.sort_by_key(|o| o.timestamp);
 
-    //     for order in all_orders {
-    //         info!("{:?}", order);
-    //     }
+        for order in all_orders {
+            info!("{:?}", order);
+        }
 
-    //     info!("Filled yes orders total contracts: {}", self.filled_yes_orders.iter().map(|o| o.contracts).sum::<f64>());
-    //     info!("Filled no orders total contracts: {}", self.filled_no_orders.iter().map(|o| o.contracts).sum::<f64>());
+        info!("Filled yes orders total contracts: {}", self.filled_yes_orders.iter().map(|o| o.contracts).sum::<f64>());
+        info!("Filled no orders total contracts: {}", self.filled_no_orders.iter().map(|o| o.contracts).sum::<f64>());
 
-    //     let avg_yes = match self.calculate_avg_yes_price() {
-    //         Some(avg) => avg,
-    //         None => 0.0,
-    //     };
-    //     let avg_no = match self.calculate_avg_no_price() {
-    //         Some(avg) => avg,
-    //         None => 0.0,
-    //     };
+        let avg_yes = match self.calculate_avg_yes_price() {
+            Some(avg) => avg,
+            None => 0.0,
+        };
+        let avg_no = match self.calculate_avg_no_price() {
+            Some(avg) => avg,
+            None => 0.0,
+        };
 
-    //     let total_cost = avg_yes + avg_no;
+        let total_cost = avg_yes + avg_no;
 
-    //     info!("Avg price yes: {}", avg_yes);
-    //     info!("Avg price no: {}", avg_no);
+        info!("Avg price yes: {}", avg_yes);
+        info!("Avg price no: {}", avg_no);
 
-    //     info!("Total cost: {}", total_cost);
-    // }
+        info!("Total cost: {}", total_cost);
+    }
 
     pub fn append_result_to_csv(
         &self,
@@ -460,50 +460,50 @@ impl Default for BacktestEngine {
     }
 }
 
-// fn load_market_data_from_csv(path: &str) -> Result<Vec<MarketDataRow>, Box<dyn std::error::Error>> {
-//     let file = File::open(path)?;
-//     let reader = BufReader::new(file);
-//     let mut rows = Vec::new();
+fn load_market_data_from_csv(path: &str) -> Result<Vec<MarketDataRow>, Box<dyn std::error::Error>> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut rows = Vec::new();
 
-//     for (i, line) in reader.lines().enumerate() {
-//         let line = line?;
-//         if i == 0 {
-//             continue;
-//         }
-//         let parts: Vec<&str> = line.split(',').collect();
-//         if parts.len() < 6 {
-//             continue;
-//         }
-//         let timestamp = NaiveDateTime::parse_from_str(parts[0].trim(), "%Y-%m-%d %H:%M:%S")
-//             .map(|dt| Utc.from_utc_datetime(&dt))
-//             .map_err(|e| format!("parse timestamp {:?}: {}", parts[0], e))?;
-//         let ticker = parts[1].trim().to_string();
-//         let yes_ask: f64 = parts[2]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse yes_ask: {}", parts[2]))?;
-//         let yes_bid: f64 = parts[3]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse yes_bid: {}", parts[3]))?;
-//         let no_ask: f64 = parts[4]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse no_ask: {}", parts[4]))?;
-//         let no_bid: f64 = parts[5]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse no_bid: {}", parts[5]))?;
+    for (i, line) in reader.lines().enumerate() {
+        let line = line?;
+        if i == 0 {
+            continue;
+        }
+        let parts: Vec<&str> = line.split(',').collect();
+        if parts.len() < 6 {
+            continue;
+        }
+        let timestamp = NaiveDateTime::parse_from_str(parts[0].trim(), "%Y-%m-%d %H:%M:%S")
+            .map(|dt| Utc.from_utc_datetime(&dt))
+            .map_err(|e| format!("parse timestamp {:?}: {}", parts[0], e))?;
+        let ticker = parts[1].trim().to_string();
+        let yes_ask: f64 = parts[2]
+            .trim()
+            .parse()
+            .map_err(|_| format!("parse yes_ask: {}", parts[2]))?;
+        let yes_bid: f64 = parts[3]
+            .trim()
+            .parse()
+            .map_err(|_| format!("parse yes_bid: {}", parts[3]))?;
+        let no_ask: f64 = parts[4]
+            .trim()
+            .parse()
+            .map_err(|_| format!("parse no_ask: {}", parts[4]))?;
+        let no_bid: f64 = parts[5]
+            .trim()
+            .parse()
+            .map_err(|_| format!("parse no_bid: {}", parts[5]))?;
 
-//         rows.push(MarketDataRow {
-//             timestamp,
-//             ticker,
-//             asset: String::new(),
-//             yes_ask,
-//             yes_bid,
-//             no_ask,
-//             no_bid,
-//         });
-//     }
-//     Ok(rows)
-// }
+        rows.push(MarketDataRow {
+            timestamp,
+            ticker,
+            asset: String::new(),
+            yes_ask,
+            yes_bid,
+            no_ask,
+            no_bid,
+        });
+    }
+    Ok(rows)
+}
