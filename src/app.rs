@@ -13,14 +13,16 @@ pub async fn run(config: Config) -> Result<()> {
 
     let db = Arc::new(Db::new(&config.database.url).await?);
 
-    info!("Kalshi symbols: {:?}", config.kalshi.tracked_symbols);
+    db.export_ticker_to_csv("KXBTC15M-26FEB070400-00", "4.csv").await?;
+    db.export_ticker_to_csv("KXBTC15M-26FEB070830-30", "5.csv").await?;
+    // info!("Kalshi symbols: {:?}", config.kalshi.tracked_symbols);
   
-    let kalshi_config = config.kalshi.clone();
-    let mut kalshi_client = KalshiClient::new(kalshi_config, db)?;
+    // let kalshi_config = config.kalshi.clone();
+    // let mut kalshi_client = KalshiClient::new(kalshi_config, db)?;
     
-    if let Err(e) = kalshi_client.start().await {
-        error!("Kalshi client error: {}", e);
-    }
+    // if let Err(e) = kalshi_client.start().await {
+    //     error!("Kalshi client error: {}", e);
+    // }
 
     Ok(())
 }
