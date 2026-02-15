@@ -47,12 +47,13 @@ pub struct BacktestEngine {
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
     market_end: Option<DateTime<Utc>>,
+    time_since_begin: Option<Duration>,
 }
 
-const STEP: f64 = 0.02;
+const STEP: f64 = 0.05;
 const INITIAL_WALLET_BALANCE: f64 = 100.0;
-const LADDER_LENGTH: usize = 20;
-const DOLLAR_PER_ORDER: f64 = 3.0;
+const LADDER_LENGTH: usize = 5;
+const DOLLAR_PER_ORDER: f64 = 5.0;
 const REBALANCE_SUM: f64 = 0.95;
 
 fn round_to_nearest_cent(price: f64) -> f64 {
@@ -82,7 +83,8 @@ impl BacktestEngine {
             asset: None,
             last_yes_ask: None,
             last_no_ask: None,
-            market_end: None
+            market_end: None,
+            time_since_begin: None
         }
     }
 
@@ -94,22 +96,22 @@ impl BacktestEngine {
     
         (1..=LADDER_LENGTH)
             .map(|i| round_to_nearest_cent(anchor - (i as f64 * STEP)).max(0.01))
-            .filter(|&p| {
-                let new_qty = DOLLAR_PER_ORDER / p;
+            // .filter(|&p| {
+            //     let new_qty = DOLLAR_PER_ORDER / p;
                 
-                let (hypothetical_yes, hypothetical_no) = if is_yes {
-                    (total_yes + new_qty, total_no)
-                } else {
-                    (total_yes, total_no + new_qty)
-                };
+            //     let (hypothetical_yes, hypothetical_no) = if is_yes {
+            //         (total_yes + new_qty, total_no)
+            //     } else {
+            //         (total_yes, total_no + new_qty)
+            //     };
                 
-                let imbalance = (hypothetical_yes - hypothetical_no).abs();
-                let current_spent = current_total_spent + DOLLAR_PER_ORDER;
+            //     let imbalance = (hypothetical_yes - hypothetical_no).abs();
+            //     let current_spent = current_total_spent + DOLLAR_PER_ORDER;
                 
-                let max_hedge_cost = imbalance * (REBALANCE_SUM - p).max(0.10); 
+            //     let max_hedge_cost = imbalance * (REBALANCE_SUM - p).max(0.10); 
     
-                (current_spent + max_hedge_cost + DOLLAR_PER_ORDER) <= INITIAL_WALLET_BALANCE
-            })
+            //     (current_spent + max_hedge_cost + DOLLAR_PER_ORDER) <= INITIAL_WALLET_BALANCE
+            // })
             .collect()
     }
 
@@ -131,17 +133,51 @@ impl BacktestEngine {
 
     pub fn handle_ladders(&mut self, yes_ask: f64, no_ask: f64) {
         if self.yes_ladder_anchor_price.is_none() {
-            if yes_ask < 0.60 && yes_ask > 0.0{
+            if yes_ask > 0.65 && yes_ask > no_ask && yes_ask > 0.0 && no_ask > 0.0 {
+                info!("yes_ask {} > no_ask {}", yes_ask, no_ask);
                 self.yes_ladder_anchor_price = Some(yes_ask);
                 self.yes_ladder = self.create_ladder(yes_ask, true);
-                info!("Yes ladder: {:?}", self.yes_ladder);   
+                info!("Yes ladder init: {:?}", self.yes_ladder);
+
+                // self.no_ladder_anchor_price = None;
+                // self.no_ladder = Vec::new();
             }
         }
         if self.no_ladder_anchor_price.is_none() {
-            if no_ask < 0.60 && no_ask > 0.0 {
+            if no_ask > 0.65 && no_ask > yes_ask && no_ask > 0.0 && yes_ask > 0.0 {
+                info!("no_ask {} > yes_ask {}", no_ask, yes_ask);
                 self.no_ladder_anchor_price = Some(no_ask);
                 self.no_ladder = self.create_ladder(no_ask, false);
-                info!("No ladder: {:?}", self.no_ladder);
+                info!("No ladder init: {:?}", self.no_ladder);
+
+                // self.yes_ladder_anchor_price = None;
+                // self.yes_ladder = Vec::new();
+            }
+        }
+
+        if self.yes_ladder_anchor_price.is_some() && yes_ask > 0.65 && yes_ask > no_ask && no_ask > 0.0 {
+            let diff = self.yes_ladder_anchor_price.unwrap() - yes_ask;
+
+            if diff > 0.10 {
+                self.yes_ladder_anchor_price = Some(yes_ask);
+                self.yes_ladder = self.create_ladder(yes_ask, true);
+                info!("Yes ladder updated: {:?}", self.yes_ladder);
+
+                self.no_ladder_anchor_price = None;
+                self.no_ladder = Vec::new();
+            }
+        }
+
+        if self.no_ladder_anchor_price.is_some() && no_ask > 0.65 && no_ask > yes_ask && yes_ask > 0.0 {
+            let diff = self.no_ladder_anchor_price.unwrap() - no_ask;
+
+            if diff > 0.10 {
+                self.no_ladder_anchor_price = Some(no_ask);
+                self.no_ladder = self.create_ladder(no_ask, false);
+                info!("No ladder updated: {:?}", self.no_ladder);
+
+                self.yes_ladder_anchor_price = None;
+                self.yes_ladder = Vec::new();
             }
         }
     }
@@ -188,6 +224,8 @@ impl BacktestEngine {
         if self.balance < DOLLAR_PER_ORDER || self.balance < open_orders_dollars || waiting_for_hedge {
             return;
         }
+
+        // info!("yes_ask: {}, no_ask: {}", yes_ask, no_ask);
 
         let mut filled_yes_prices = Vec::new();
         for yes_price in &self.yes_ladder {
@@ -354,6 +392,9 @@ impl BacktestEngine {
         info!("Avg price no: {}", avg_no);
 
         info!("Total cost: {}", total_cost);
+
+        info!("Open yes rebalance: {:?}", self.open_yes_rebalance);
+        info!("Open no rebalance: {:?}", self.open_no_rebalance);
     }
 
     pub fn append_result_to_csv(
@@ -422,6 +463,11 @@ impl BacktestEngine {
 
             let total_rows = market_data.len();
             for tick in market_data.iter() {
+                self.time_since_begin = Some(tick.timestamp - first_timestamp);
+            
+                if self.time_since_begin.unwrap().num_seconds() < 10 {
+                    continue;
+                }
                 self.process_tick(tick);
             }
 
@@ -429,28 +475,32 @@ impl BacktestEngine {
                 .expect("append backtest result to CSV");
         }
 
-        // let csv_name = "2.csv";
-        // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
-        // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
+    //     let csv_name = "2.csv";
+    //     let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
+    //     info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
 
-        // if market_data.is_empty() {
-        //     info!("No market data to process");
-        //     return;
-        // }
+    //     if market_data.is_empty() {
+    //         info!("No market data to process");
+    //         return;
+    //     }
 
-        // // self.asset = market_data.first().map(|r| r.ticker.clone());
-        // // self.reset();
+    //     // self.asset = market_data.first().map(|r| r.ticker.clone());
+    //     // self.reset();
 
-        // let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
-        // //calc 15 min from first timestamp
-        // let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
-        // self.market_end = Some(fifteen_min_from_first_timestamp);
+    //     let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+    //     let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
+    //     self.market_end = Some(fifteen_min_from_first_timestamp);
 
-        // for tick in &market_data {
-        //     self.process_tick(tick);
-        // }
+    //     for tick in &market_data {
+    //         self.time_since_begin = Some(tick.timestamp - first_timestamp);
+            
+    //         if self.time_since_begin.unwrap().num_seconds() < 10 {
+    //             continue;
+    //         }
+    //         self.process_tick(tick);
+    //     }
 
-        // self.log_results();
+    //     self.log_results();
     }
 }
 
