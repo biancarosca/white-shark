@@ -47,13 +47,12 @@ pub struct BacktestEngine {
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
     market_end: Option<DateTime<Utc>>,
-    time_since_begin: Option<Duration>,
 }
 
-const STEP: f64 = 0.05;
+const STEP: f64 = 0.02;
 const INITIAL_WALLET_BALANCE: f64 = 100.0;
-const LADDER_LENGTH: usize = 5;
-const DOLLAR_PER_ORDER: f64 = 5.0;
+const LADDER_LENGTH: usize = 20;
+const DOLLAR_PER_ORDER: f64 = 3.0;
 const REBALANCE_SUM: f64 = 0.95;
 
 fn round_to_nearest_cent(price: f64) -> f64 {
@@ -83,8 +82,7 @@ impl BacktestEngine {
             asset: None,
             last_yes_ask: None,
             last_no_ask: None,
-            market_end: None,
-            time_since_begin: None
+            market_end: None
         }
     }
 
@@ -96,22 +94,22 @@ impl BacktestEngine {
     
         (1..=LADDER_LENGTH)
             .map(|i| round_to_nearest_cent(anchor - (i as f64 * STEP)).max(0.01))
-            // .filter(|&p| {
-            //     let new_qty = DOLLAR_PER_ORDER / p;
+            .filter(|&p| {
+                let new_qty = DOLLAR_PER_ORDER / p;
                 
-            //     let (hypothetical_yes, hypothetical_no) = if is_yes {
-            //         (total_yes + new_qty, total_no)
-            //     } else {
-            //         (total_yes, total_no + new_qty)
-            //     };
+                let (hypothetical_yes, hypothetical_no) = if is_yes {
+                    (total_yes + new_qty, total_no)
+                } else {
+                    (total_yes, total_no + new_qty)
+                };
                 
-            //     let imbalance = (hypothetical_yes - hypothetical_no).abs();
-            //     let current_spent = current_total_spent + DOLLAR_PER_ORDER;
+                let imbalance = (hypothetical_yes - hypothetical_no).abs();
+                let current_spent = current_total_spent + DOLLAR_PER_ORDER;
                 
-            //     let max_hedge_cost = imbalance * (REBALANCE_SUM - p).max(0.10); 
+                let max_hedge_cost = imbalance * (REBALANCE_SUM - p).max(0.10); 
     
-            //     (current_spent + max_hedge_cost + DOLLAR_PER_ORDER) <= INITIAL_WALLET_BALANCE
-            // })
+                (current_spent + max_hedge_cost + DOLLAR_PER_ORDER) <= INITIAL_WALLET_BALANCE
+            })
             .collect()
     }
 
@@ -133,51 +131,17 @@ impl BacktestEngine {
 
     pub fn handle_ladders(&mut self, yes_ask: f64, no_ask: f64) {
         if self.yes_ladder_anchor_price.is_none() {
-            if yes_ask > 0.65 && yes_ask > no_ask && yes_ask > 0.0 && no_ask > 0.0 {
-                info!("yes_ask {} > no_ask {}", yes_ask, no_ask);
+            if yes_ask < 0.60 && yes_ask > 0.0{
                 self.yes_ladder_anchor_price = Some(yes_ask);
                 self.yes_ladder = self.create_ladder(yes_ask, true);
-                info!("Yes ladder init: {:?}", self.yes_ladder);
-
-                // self.no_ladder_anchor_price = None;
-                // self.no_ladder = Vec::new();
+                info!("Yes ladder: {:?}", self.yes_ladder);   
             }
         }
         if self.no_ladder_anchor_price.is_none() {
-            if no_ask > 0.65 && no_ask > yes_ask && no_ask > 0.0 && yes_ask > 0.0 {
-                info!("no_ask {} > yes_ask {}", no_ask, yes_ask);
+            if no_ask < 0.60 && no_ask > 0.0 {
                 self.no_ladder_anchor_price = Some(no_ask);
                 self.no_ladder = self.create_ladder(no_ask, false);
-                info!("No ladder init: {:?}", self.no_ladder);
-
-                // self.yes_ladder_anchor_price = None;
-                // self.yes_ladder = Vec::new();
-            }
-        }
-
-        if self.yes_ladder_anchor_price.is_some() && yes_ask > 0.65 && yes_ask > no_ask && no_ask > 0.0 {
-            let diff = self.yes_ladder_anchor_price.unwrap() - yes_ask;
-
-            if diff > 0.10 {
-                self.yes_ladder_anchor_price = Some(yes_ask);
-                self.yes_ladder = self.create_ladder(yes_ask, true);
-                info!("Yes ladder updated: {:?}", self.yes_ladder);
-
-                self.no_ladder_anchor_price = None;
-                self.no_ladder = Vec::new();
-            }
-        }
-
-        if self.no_ladder_anchor_price.is_some() && no_ask > 0.65 && no_ask > yes_ask && yes_ask > 0.0 {
-            let diff = self.no_ladder_anchor_price.unwrap() - no_ask;
-
-            if diff > 0.10 {
-                self.no_ladder_anchor_price = Some(no_ask);
-                self.no_ladder = self.create_ladder(no_ask, false);
-                info!("No ladder updated: {:?}", self.no_ladder);
-
-                self.yes_ladder_anchor_price = None;
-                self.yes_ladder = Vec::new();
+                info!("No ladder: {:?}", self.no_ladder);
             }
         }
     }
@@ -212,20 +176,11 @@ impl BacktestEngine {
             }
         }
 
-        // check if we are in the last 5 minutes of the market, no more ladder orders allowed, only rebalance allowed
-        if let Some(market_end) = self.market_end {
-            if timestamp > market_end - Duration::minutes(5) {
-                return;
-            }
-        }
-
         let waiting_for_hedge = self.open_yes_rebalance.is_some() || self.open_no_rebalance.is_some();
 
         if self.balance < DOLLAR_PER_ORDER || self.balance < open_orders_dollars || waiting_for_hedge {
             return;
         }
-
-        // info!("yes_ask: {}, no_ask: {}", yes_ask, no_ask);
 
         let mut filled_yes_prices = Vec::new();
         for yes_price in &self.yes_ladder {
@@ -262,19 +217,19 @@ impl BacktestEngine {
         self.no_ladder.retain(|p| !filled_no_prices.contains(p));
     }
 
-    pub fn rebalance(&mut self) {
+    pub fn get_contract_diff(&self) -> f64 {
         let total_filled_yes_contracts = self
             .filled_yes_orders
             .iter()
             .map(|o| o.contracts)
             .sum::<f64>();
         let total_filled_no_contracts = self
-            .filled_no_orders
-            .iter()
-            .map(|o| o.contracts)
-            .sum::<f64>();
+            .filled_no_orders.iter().map(|o| o.contracts).sum::<f64>();
+        total_filled_yes_contracts - total_filled_no_contracts
+    }
 
-        let diff = total_filled_yes_contracts - total_filled_no_contracts;
+    pub fn rebalance(&mut self) {
+        let diff = self.get_contract_diff();
 
         if diff == 0.0 {
             return;
@@ -333,7 +288,7 @@ impl BacktestEngine {
     pub fn process_tick(&mut self, tick: &MarketDataRow) {
         self.handle_ladders(tick.yes_ask, tick.no_ask);
         self.handle_orders(tick.yes_ask, tick.no_ask, tick.timestamp);
-        self.rebalance();
+        // self.rebalance();
         self.set_last_asks(tick.yes_ask, tick.no_ask);
     }
 
@@ -440,67 +395,59 @@ impl BacktestEngine {
         info!("Starting backtest...");
 
         dotenv::dotenv().ok();
+
         
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        let db: Db = Db::new(&db_url).await.unwrap();
+        // let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        // let db: Db = Db::new(&db_url).await.unwrap();
 
-        let tickers: Vec<String> = db.fetch_all_tickers().await.unwrap();
-        info!("Found {} tickers", tickers.len());
+        // let tickers: Vec<String> = db.fetch_all_tickers().await.unwrap();
+        // info!("Found {} tickers", tickers.len());
 
-        let csv_path = "backtest_results.csv";
+        // let csv_path = "backtest_results.csv";
 
-        for ticker in tickers.iter().take(100) {
-            let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
-            info!("Found {} market data for ticker: {}", market_data.len(), ticker);
+        // for ticker in tickers.iter().take(100) {
+        //     let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
+        //     info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
-            self.asset = Some(market_data[0].asset.clone());
-            self.reset();
+        //     self.asset = Some(market_data[0].asset.clone());
+        //     self.reset();
             
-            let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
-            //calc 15 min from first timestamp
-            let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
-            self.market_end = Some(fifteen_min_from_first_timestamp);
+        //     let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+        //     //calc 15 min from first timestamp
+        //     let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
+        //     self.market_end = Some(fifteen_min_from_first_timestamp);
 
-            let total_rows = market_data.len();
-            for tick in market_data.iter() {
-                self.time_since_begin = Some(tick.timestamp - first_timestamp);
-            
-                if self.time_since_begin.unwrap().num_seconds() < 10 {
-                    continue;
-                }
-                self.process_tick(tick);
-            }
+        //     let total_rows = market_data.len();
+        //     for tick in market_data.iter() {
+        //         self.process_tick(tick);
+        //     }
 
-            self.append_result_to_csv(&csv_path, &ticker, total_rows)
-                .expect("append backtest result to CSV");
+        //     self.append_result_to_csv(&csv_path, &ticker, total_rows)
+        //         .expect("append backtest result to CSV");
+        // }
+
+        let csv_name = "5.csv";
+        let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
+        info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
+
+        if market_data.is_empty() {
+            info!("No market data to process");
+            return;
         }
 
-    //     let csv_name = "2.csv";
-    //     let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
-    //     info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
+        // self.asset = market_data.first().map(|r| r.ticker.clone());
+        // self.reset();
 
-    //     if market_data.is_empty() {
-    //         info!("No market data to process");
-    //         return;
-    //     }
+        let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+        //calc 15 min from first timestamp
+        let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
+        self.market_end = Some(fifteen_min_from_first_timestamp);
 
-    //     // self.asset = market_data.first().map(|r| r.ticker.clone());
-    //     // self.reset();
+        for tick in &market_data {
+            self.process_tick(tick);
+        }
 
-    //     let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
-    //     let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
-    //     self.market_end = Some(fifteen_min_from_first_timestamp);
-
-    //     for tick in &market_data {
-    //         self.time_since_begin = Some(tick.timestamp - first_timestamp);
-            
-    //         if self.time_since_begin.unwrap().num_seconds() < 10 {
-    //             continue;
-    //         }
-    //         self.process_tick(tick);
-    //     }
-
-    //     self.log_results();
+        self.log_results();
     }
 }
 
