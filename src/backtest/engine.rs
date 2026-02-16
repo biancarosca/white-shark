@@ -482,11 +482,15 @@ impl BacktestEngine {
             let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
             info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
+            if market_data.is_empty() {
+                info!("Skipping ticker {} — no market data", ticker);
+                continue;
+            }
+
             self.asset = Some(market_data[0].asset.clone());
             self.reset();
             
-            let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
-            //calc 15 min from first timestamp
+            let first_timestamp = market_data[0].timestamp;
             let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
             self.market_end = Some(fifteen_min_from_first_timestamp);
 
