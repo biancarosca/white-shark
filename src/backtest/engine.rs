@@ -49,8 +49,10 @@ pub struct BacktestEngine {
     market_end: Option<DateTime<Utc>>,
     market_reached_99_yes: bool,
     market_reached_99_no: bool,
-    market_yes_reversed: bool,
-    market_no_reversed: bool,
+    market_yes_reversed_min_ask: Option<f64>,
+    market_yes_reversed_min_bid: Option<f64>,
+    market_no_reversed_min_ask: Option<f64>,
+    market_no_reversed_min_bid: Option<f64>,
 }
 
 const STEP: f64 = 0.02;
@@ -89,8 +91,10 @@ impl BacktestEngine {
             market_end: None,
             market_reached_99_yes: false,
             market_reached_99_no: false,
-            market_yes_reversed: false,
-            market_no_reversed: false,
+            market_yes_reversed_min_ask: None,
+            market_yes_reversed_min_bid: None,
+            market_no_reversed_min_ask: None,
+            market_no_reversed_min_bid: None,
         }
     }
 
@@ -300,9 +304,15 @@ impl BacktestEngine {
                 info!("Market YES reached 99 at timestamp: {}", tick.timestamp);
             }
         } else {
-            if tick.yes_ask < 0.90 && tick.yes_ask > 0.0 {
-                self.market_yes_reversed = true;
-                info!("Market YES fell below 90 at timestamp: {}, asking price: {}", tick.timestamp, tick.yes_ask);
+            if tick.yes_ask <= 0.98 && tick.yes_ask > 0.0 {
+                if tick.yes_ask < self.market_yes_reversed_min_ask.unwrap_or(0.0) {
+                    self.market_yes_reversed_min_ask = Some(tick.yes_ask);
+                }
+            }
+            if tick.yes_bid <= 0.98 && tick.yes_bid > 0.0 {
+                if tick.yes_bid < self.market_yes_reversed_min_bid.unwrap_or(0.0) {
+                    self.market_yes_reversed_min_bid = Some(tick.yes_bid);
+                }
             }
         }
 
@@ -312,15 +322,21 @@ impl BacktestEngine {
                 info!("Market NO reached 99 at timestamp: {}", tick.timestamp);
             }
         } else {
-            if tick.no_ask < 0.90 && tick.no_ask > 0.0 {
-                self.market_no_reversed = true;
-                info!("Market NO fell below 90 at timestamp: {}, asking price: {}", tick.timestamp, tick.no_ask);
+            if tick.no_ask <= 0.98 && tick.no_ask > 0.0 {
+                if tick.no_ask < self.market_no_reversed_min_ask.unwrap_or(0.0) {
+                    self.market_no_reversed_min_ask = Some(tick.no_ask);
+                }
+            }
+            if tick.no_bid <= 0.98 && tick.no_bid > 0.0 {
+                if tick.no_bid < self.market_no_reversed_min_bid.unwrap_or(0.0) {
+                    self.market_no_reversed_min_bid = Some(tick.no_bid);
+                }
             }
         }
         // self.handle_ladders(tick.yes_ask, tick.no_ask);
         // self.handle_orders(tick.yes_ask, tick.no_ask, tick.timestamp);
         // // self.rebalance();
-        // self.set_last_asks(tick.yes_ask, tick.no_ask);
+        self.set_last_asks(tick.yes_ask, tick.no_ask);
     }
 
     pub fn reset(&mut self) {
@@ -338,8 +354,10 @@ impl BacktestEngine {
         self.market_end = None;
         self.market_reached_99_yes = false;
         self.market_reached_99_no = false;
-        self.market_yes_reversed = false;
-        self.market_no_reversed = false;
+        self.market_yes_reversed_min_ask = None;
+        self.market_yes_reversed_min_bid = None;
+        self.market_no_reversed_min_ask = None;
+        self.market_no_reversed_min_bid = None;
     }
 
     pub fn filled_yes_contracts(&self) -> f64 {
@@ -402,15 +420,17 @@ impl BacktestEngine {
         let avg_no = self.calculate_avg_no_price().unwrap_or(0.0);
         let total_cost = round_to_nearest_cent(avg_yes + avg_no);
 
-        let header = "ticker,total_rows_processed,market_reached_99_yes,market_reached_99_no,market_yes_reversed,market_no_reversed,last_yes_ask,last_no_ask\n";
+        let header = "ticker,total_rows_processed,market_reached_99_yes,market_reached_99_no,market_yes_reversed_min_ask,market_yes_reversed_min_bid,market_no_reversed_min_ask,market_no_reversed_min_bid,last_yes_ask,last_no_ask\n";
         let row = format!(
-            "{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             escape_csv_field(ticker),
             total_rows_processed,
             self.market_reached_99_yes,
             self.market_reached_99_no,
-            self.market_yes_reversed,
-            self.market_no_reversed,
+            self.market_yes_reversed_min_ask.unwrap_or(0.0),
+            self.market_yes_reversed_min_bid.unwrap_or(0.0),
+            self.market_no_reversed_min_ask.unwrap_or(0.0),
+            self.market_no_reversed_min_bid.unwrap_or(0.0),
             self.last_yes_ask.unwrap_or(0.0),
             self.last_no_ask.unwrap_or(0.0),
         );
