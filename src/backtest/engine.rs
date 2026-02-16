@@ -305,11 +305,17 @@ impl BacktestEngine {
             }
         } else {
             if tick.yes_ask <= 0.98 && tick.yes_ask > 0.0 {
+                if self.market_yes_reversed_min_ask.is_none() {
+                    self.market_yes_reversed_min_ask = Some(tick.yes_ask);
+                }
                 if tick.yes_ask < self.market_yes_reversed_min_ask.unwrap_or(0.0) {
                     self.market_yes_reversed_min_ask = Some(tick.yes_ask);
                 }
             }
             if tick.yes_bid <= 0.98 && tick.yes_bid > 0.0 {
+                if self.market_yes_reversed_min_bid.is_none() {
+                    self.market_yes_reversed_min_bid = Some(tick.yes_bid);
+                }
                 if tick.yes_bid < self.market_yes_reversed_min_bid.unwrap_or(0.0) {
                     self.market_yes_reversed_min_bid = Some(tick.yes_bid);
                 }
@@ -323,11 +329,17 @@ impl BacktestEngine {
             }
         } else {
             if tick.no_ask <= 0.98 && tick.no_ask > 0.0 {
+                if self.market_no_reversed_min_ask.is_none() {
+                    self.market_no_reversed_min_ask = Some(tick.no_ask);
+                }
                 if tick.no_ask < self.market_no_reversed_min_ask.unwrap_or(0.0) {
                     self.market_no_reversed_min_ask = Some(tick.no_ask);
                 }
             }
             if tick.no_bid <= 0.98 && tick.no_bid > 0.0 {
+                if self.market_no_reversed_min_bid.is_none() {
+                    self.market_no_reversed_min_bid = Some(tick.no_bid);
+                }
                 if tick.no_bid < self.market_no_reversed_min_bid.unwrap_or(0.0) {
                     self.market_no_reversed_min_bid = Some(tick.no_bid);
                 }
