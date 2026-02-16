@@ -47,8 +47,8 @@ pub struct BacktestEngine {
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
     market_end: Option<DateTime<Utc>>,
-    market_reached_99_yes: bool,
-    market_reached_99_no: bool,
+    market_reached_99_yes: Option<DateTime<Utc>>,
+    market_reached_99_no: Option<DateTime<Utc>>,
     market_yes_reversed_min_ask: Option<f64>,
     market_yes_reversed_min_bid: Option<f64>,
     market_no_reversed_min_ask: Option<f64>,
@@ -89,8 +89,8 @@ impl BacktestEngine {
             last_yes_ask: None,
             last_no_ask: None,
             market_end: None,
-            market_reached_99_yes: false,
-            market_reached_99_no: false,
+            market_reached_99_yes: None,
+            market_reached_99_no: None,
             market_yes_reversed_min_ask: None,
             market_yes_reversed_min_bid: None,
             market_no_reversed_min_ask: None,
@@ -298,9 +298,9 @@ impl BacktestEngine {
     }
 
     pub fn process_tick(&mut self, tick: &MarketDataRow) {
-        if !self.market_reached_99_yes {
+        if self.market_reached_99_yes.is_none() {
             if tick.yes_ask >= 0.99 && tick.yes_bid >= 0.98 {
-                self.market_reached_99_yes = true;
+                self.market_reached_99_yes = Some(tick.timestamp);
                 info!("Market YES reached 99 at timestamp: {}", tick.timestamp);
             }
         } else {
@@ -322,9 +322,9 @@ impl BacktestEngine {
             }
         }
 
-        if !self.market_reached_99_no {
+        if self.market_reached_99_no.is_none() {
             if tick.no_ask >= 0.99 && tick.no_bid >= 0.98 {
-                self.market_reached_99_no = true;
+                self.market_reached_99_no = Some(tick.timestamp);
                 info!("Market NO reached 99 at timestamp: {}", tick.timestamp);
             }
         } else {
@@ -364,8 +364,8 @@ impl BacktestEngine {
         self.open_yes_rebalance = None;
         self.open_no_rebalance = None;
         self.market_end = None;
-        self.market_reached_99_yes = false;
-        self.market_reached_99_no = false;
+        self.market_reached_99_yes = None;
+        self.market_reached_99_no = None;
         self.market_yes_reversed_min_ask = None;
         self.market_yes_reversed_min_bid = None;
         self.market_no_reversed_min_ask = None;
@@ -437,8 +437,8 @@ impl BacktestEngine {
             "{},{},{},{},{},{},{},{},{},{}\n",
             escape_csv_field(ticker),
             total_rows_processed,
-            self.market_reached_99_yes,
-            self.market_reached_99_no,
+            self.market_reached_99_yes.unwrap_or(Utc::now()),
+            self.market_reached_99_no.unwrap_or(Utc::now()),
             self.market_yes_reversed_min_ask.unwrap_or(0.0),
             self.market_yes_reversed_min_bid.unwrap_or(0.0),
             self.market_no_reversed_min_ask.unwrap_or(0.0),
@@ -473,7 +473,7 @@ impl BacktestEngine {
 
         let csv_path = "backtest_results.csv";
 
-        for ticker in tickers.iter().take(100) {
+        for ticker in tickers.iter() {
             let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
             info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
