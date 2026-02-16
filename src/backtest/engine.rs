@@ -437,14 +437,14 @@ impl BacktestEngine {
             "{},{},{},{},{},{},{},{},{},{}\n",
             escape_csv_field(ticker),
             total_rows_processed,
-            self.market_reached_99_yes.unwrap_or(Utc::now()),
-            self.market_reached_99_no.unwrap_or(Utc::now()),
-            self.market_yes_reversed_min_ask.unwrap_or(0.0),
-            self.market_yes_reversed_min_bid.unwrap_or(0.0),
-            self.market_no_reversed_min_ask.unwrap_or(0.0),
-            self.market_no_reversed_min_bid.unwrap_or(0.0),
-            self.last_yes_ask.unwrap_or(0.0),
-            self.last_no_ask.unwrap_or(0.0),
+            self.market_reached_99_yes.map(|t| t.to_string()).unwrap_or_default(),
+            self.market_reached_99_no.map(|t| t.to_string()).unwrap_or_default(),
+            self.market_yes_reversed_min_ask.map(|t| t.to_string()).unwrap_or_default(),
+            self.market_yes_reversed_min_bid.map(|t| t.to_string()).unwrap_or_default(),
+            self.market_no_reversed_min_ask.map(|t| t.to_string()).unwrap_or_default(),
+            self.market_no_reversed_min_bid.map(|t| t.to_string()).unwrap_or_default(),
+            self.last_yes_ask.map(|t| t.to_string()).unwrap_or_default(),
+            self.last_no_ask.map(|t| t.to_string()).unwrap_or_default(),
         );
 
         let exists = std::path::Path::new(path).exists();
@@ -470,6 +470,11 @@ impl BacktestEngine {
 
         let tickers: Vec<String> = db.fetch_all_tickers().await.unwrap();
         info!("Found {} tickers", tickers.len());
+
+        if tickers.is_empty() {
+            info!("No tickers found");
+            return;
+        }
 
         let csv_path = "backtest_results.csv";
 
