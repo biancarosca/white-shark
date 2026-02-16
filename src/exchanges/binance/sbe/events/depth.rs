@@ -138,16 +138,16 @@ impl<'a> DepthSnapshotStreamEvent<'a> {
         let imbalance_all = all_bids_total_qty / all_asks_total_qty;
 
         info!(
-            "📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3}",
-            top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5
+            "📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
+            top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5, self.event_time, Utc::now()
         );
         info!(
-            "📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3}",
-            top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10
+            "📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
+            top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10, self.event_time, Utc::now()
         );
         info!(
-            "📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3}\n",
-            all_bids_total_qty, all_asks_total_qty, imbalance_all
+            "📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
+            all_bids_total_qty, all_asks_total_qty, imbalance_all, self.event_time, Utc::now()
         );
         if imbalance_top_5 > 100.0 {
             info!("ALERT: N_5: imbalance\n");

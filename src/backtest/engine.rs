@@ -47,6 +47,10 @@ pub struct BacktestEngine {
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
     market_end: Option<DateTime<Utc>>,
+    market_reached_99_yes: bool,
+    market_reached_99_no: bool,
+    market_yes_reversed: bool,
+    market_no_reversed: bool,
 }
 
 const STEP: f64 = 0.02;
@@ -82,7 +86,11 @@ impl BacktestEngine {
             asset: None,
             last_yes_ask: None,
             last_no_ask: None,
-            market_end: None
+            market_end: None,
+            market_reached_99_yes: false,
+            market_reached_99_no: false,
+            market_yes_reversed: false,
+            market_no_reversed: false,
         }
     }
 
@@ -286,10 +294,33 @@ impl BacktestEngine {
     }
 
     pub fn process_tick(&mut self, tick: &MarketDataRow) {
-        self.handle_ladders(tick.yes_ask, tick.no_ask);
-        self.handle_orders(tick.yes_ask, tick.no_ask, tick.timestamp);
-        // self.rebalance();
-        self.set_last_asks(tick.yes_ask, tick.no_ask);
+        if !self.market_reached_99_yes {
+            if tick.yes_ask >= 0.99 && tick.yes_bid >= 0.98 {
+                self.market_reached_99_yes = true;
+                info!("Market YES reached 99 at timestamp: {}", tick.timestamp);
+            }
+        } else {
+            if tick.yes_ask < 0.90 && tick.yes_ask > 0.0 {
+                self.market_yes_reversed = true;
+                info!("Market YES fell below 90 at timestamp: {}, asking price: {}", tick.timestamp, tick.yes_ask);
+            }
+        }
+
+        if !self.market_reached_99_no {
+            if tick.no_ask >= 0.99 && tick.no_bid >= 0.98 {
+                self.market_reached_99_no = true;
+                info!("Market NO reached 99 at timestamp: {}", tick.timestamp);
+            }
+        } else {
+            if tick.no_ask < 0.90 && tick.no_ask > 0.0 {
+                self.market_no_reversed = true;
+                info!("Market NO fell below 90 at timestamp: {}, asking price: {}", tick.timestamp, tick.no_ask);
+            }
+        }
+        // self.handle_ladders(tick.yes_ask, tick.no_ask);
+        // self.handle_orders(tick.yes_ask, tick.no_ask, tick.timestamp);
+        // // self.rebalance();
+        // self.set_last_asks(tick.yes_ask, tick.no_ask);
     }
 
     pub fn reset(&mut self) {
@@ -305,6 +336,10 @@ impl BacktestEngine {
         self.open_yes_rebalance = None;
         self.open_no_rebalance = None;
         self.market_end = None;
+        self.market_reached_99_yes = false;
+        self.market_reached_99_no = false;
+        self.market_yes_reversed = false;
+        self.market_no_reversed = false;
     }
 
     pub fn filled_yes_contracts(&self) -> f64 {
@@ -315,42 +350,45 @@ impl BacktestEngine {
         self.filled_no_orders.iter().map(|o| o.contracts).sum()
     }
 
-    pub fn log_results(&self) {
-        info!("Asset: {:?}", self.asset);
-        info!("Balance remaining: {}", self.balance);
+    // pub fn log_results(&self) {
+    //     // info!("Asset: {:?}", self.asset);
+    //     // info!("Balance remaining: {}", self.balance);
 
-        let mut all_orders: Vec<&FilledOrder> = self.filled_yes_orders.iter()
-            .chain(self.filled_no_orders.iter())
-            .collect();
+    //     // let mut all_orders: Vec<&FilledOrder> = self.filled_yes_orders.iter()
+    //     //     .chain(self.filled_no_orders.iter())
+    //     //     .collect();
 
-        all_orders.sort_by_key(|o| o.timestamp);
+    //     // all_orders.sort_by_key(|o| o.timestamp);
 
-        for order in all_orders {
-            info!("{:?}", order);
-        }
+    //     // for order in all_orders {
+    //     //     info!("{:?}", order);
+    //     // }
 
-        info!("Filled yes orders total contracts: {}", self.filled_yes_orders.iter().map(|o| o.contracts).sum::<f64>());
-        info!("Filled no orders total contracts: {}", self.filled_no_orders.iter().map(|o| o.contracts).sum::<f64>());
+    //     // info!("Filled yes orders total contracts: {}", self.filled_yes_orders.iter().map(|o| o.contracts).sum::<f64>());
+    //     // info!("Filled no orders total contracts: {}", self.filled_no_orders.iter().map(|o| o.contracts).sum::<f64>());
 
-        let avg_yes = match self.calculate_avg_yes_price() {
-            Some(avg) => avg,
-            None => 0.0,
-        };
-        let avg_no = match self.calculate_avg_no_price() {
-            Some(avg) => avg,
-            None => 0.0,
-        };
+    //     // let avg_yes = match self.calculate_avg_yes_price() {
+    //     //     Some(avg) => avg,
+    //     //     None => 0.0,
+    //     // };
+    //     // let avg_no = match self.calculate_avg_no_price() {
+    //     //     Some(avg) => avg,
+    //     //     None => 0.0,
+    //     // };
 
-        let total_cost = avg_yes + avg_no;
+    //     // let total_cost = avg_yes + avg_no;
 
-        info!("Avg price yes: {}", avg_yes);
-        info!("Avg price no: {}", avg_no);
+    //     // info!("Avg price yes: {}", avg_yes);
+    //     // info!("Avg price no: {}", avg_no);
 
-        info!("Total cost: {}", total_cost);
+    //     // info!("Total cost: {}", total_cost);
 
-        info!("Open yes rebalance: {:?}", self.open_yes_rebalance);
-        info!("Open no rebalance: {:?}", self.open_no_rebalance);
-    }
+    //     // info!("Open yes rebalance: {:?}", self.open_yes_rebalance);
+    //     // info!("Open no rebalance: {:?}", self.open_no_rebalance);
+
+    //     info!("Last YES ask: {}", self.last_yes_ask.unwrap_or(0.0));
+    //     info!("Last NO ask: {}", self.last_no_ask.unwrap_or(0.0));
+    // }
 
     pub fn append_result_to_csv(
         &self,
@@ -364,17 +402,15 @@ impl BacktestEngine {
         let avg_no = self.calculate_avg_no_price().unwrap_or(0.0);
         let total_cost = round_to_nearest_cent(avg_yes + avg_no);
 
-        let header = "ticker,total_rows_processed,balance_remaining,filled_yes_contracts,filled_no_contracts,avg_price_yes,avg_price_no,total_cost,last_yes_ask,last_no_ask\n";
+        let header = "ticker,total_rows_processed,market_reached_99_yes,market_reached_99_no,market_yes_reversed,market_no_reversed,last_yes_ask,last_no_ask\n";
         let row = format!(
-            "{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{}\n",
             escape_csv_field(ticker),
             total_rows_processed,
-            round_to_nearest_cent(self.balance),
-            round_to_nearest_cent(total_yes),
-            round_to_nearest_cent(total_no),
-            avg_yes,
-            avg_no,
-            total_cost,
+            self.market_reached_99_yes,
+            self.market_reached_99_no,
+            self.market_yes_reversed,
+            self.market_no_reversed,
             self.last_yes_ask.unwrap_or(0.0),
             self.last_no_ask.unwrap_or(0.0),
         );
@@ -397,57 +433,57 @@ impl BacktestEngine {
         dotenv::dotenv().ok();
 
         
-        // let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        // let db: Db = Db::new(&db_url).await.unwrap();
+        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let db: Db = Db::new(&db_url).await.unwrap();
 
-        // let tickers: Vec<String> = db.fetch_all_tickers().await.unwrap();
-        // info!("Found {} tickers", tickers.len());
+        let tickers: Vec<String> = db.fetch_all_tickers().await.unwrap();
+        info!("Found {} tickers", tickers.len());
 
-        // let csv_path = "backtest_results.csv";
+        let csv_path = "backtest_results.csv";
 
-        // for ticker in tickers.iter().take(100) {
-        //     let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
-        //     info!("Found {} market data for ticker: {}", market_data.len(), ticker);
+        for ticker in tickers.iter().take(100) {
+            let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
+            info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
-        //     self.asset = Some(market_data[0].asset.clone());
-        //     self.reset();
+            self.asset = Some(market_data[0].asset.clone());
+            self.reset();
             
-        //     let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
-        //     //calc 15 min from first timestamp
-        //     let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
-        //     self.market_end = Some(fifteen_min_from_first_timestamp);
+            let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+            //calc 15 min from first timestamp
+            let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
+            self.market_end = Some(fifteen_min_from_first_timestamp);
 
-        //     let total_rows = market_data.len();
-        //     for tick in market_data.iter() {
-        //         self.process_tick(tick);
-        //     }
+            let total_rows = market_data.len();
+            for tick in market_data.iter() {
+                self.process_tick(tick);
+            }
 
-        //     self.append_result_to_csv(&csv_path, &ticker, total_rows)
-        //         .expect("append backtest result to CSV");
+            self.append_result_to_csv(&csv_path, &ticker, total_rows)
+                .expect("append backtest result to CSV");
+        }
+
+        // let csv_name = "5.csv";
+        // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
+        // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
+
+        // if market_data.is_empty() {
+        //     info!("No market data to process");
+        //     return;
         // }
 
-        let csv_name = "5.csv";
-        let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
-        info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
+        // // self.asset = market_data.first().map(|r| r.ticker.clone());
+        // // self.reset();
 
-        if market_data.is_empty() {
-            info!("No market data to process");
-            return;
-        }
+        // let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+        // //calc 15 min from first timestamp
+        // let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
+        // self.market_end = Some(fifteen_min_from_first_timestamp);
 
-        // self.asset = market_data.first().map(|r| r.ticker.clone());
-        // self.reset();
+        // for tick in &market_data {
+        //     self.process_tick(tick);
+        // }
 
-        let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
-        //calc 15 min from first timestamp
-        let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
-        self.market_end = Some(fifteen_min_from_first_timestamp);
-
-        for tick in &market_data {
-            self.process_tick(tick);
-        }
-
-        self.log_results();
+        // self.log_results();
     }
 }
 
@@ -457,50 +493,50 @@ impl Default for BacktestEngine {
     }
 }
 
-fn load_market_data_from_csv(path: &str) -> Result<Vec<MarketDataRow>, Box<dyn std::error::Error>> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    let mut rows = Vec::new();
+// fn load_market_data_from_csv(path: &str) -> Result<Vec<MarketDataRow>, Box<dyn std::error::Error>> {
+//     let file = File::open(path)?;
+//     let reader = BufReader::new(file);
+//     let mut rows = Vec::new();
 
-    for (i, line) in reader.lines().enumerate() {
-        let line = line?;
-        if i == 0 {
-            continue;
-        }
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 6 {
-            continue;
-        }
-        let timestamp = NaiveDateTime::parse_from_str(parts[0].trim(), "%Y-%m-%d %H:%M:%S")
-            .map(|dt| Utc.from_utc_datetime(&dt))
-            .map_err(|e| format!("parse timestamp {:?}: {}", parts[0], e))?;
-        let ticker = parts[1].trim().to_string();
-        let yes_ask: f64 = parts[2]
-            .trim()
-            .parse()
-            .map_err(|_| format!("parse yes_ask: {}", parts[2]))?;
-        let yes_bid: f64 = parts[3]
-            .trim()
-            .parse()
-            .map_err(|_| format!("parse yes_bid: {}", parts[3]))?;
-        let no_ask: f64 = parts[4]
-            .trim()
-            .parse()
-            .map_err(|_| format!("parse no_ask: {}", parts[4]))?;
-        let no_bid: f64 = parts[5]
-            .trim()
-            .parse()
-            .map_err(|_| format!("parse no_bid: {}", parts[5]))?;
+//     for (i, line) in reader.lines().enumerate() {
+//         let line = line?;
+//         if i == 0 {
+//             continue;
+//         }
+//         let parts: Vec<&str> = line.split(',').collect();
+//         if parts.len() < 6 {
+//             continue;
+//         }
+//         let timestamp = NaiveDateTime::parse_from_str(parts[0].trim(), "%Y-%m-%d %H:%M:%S")
+//             .map(|dt| Utc.from_utc_datetime(&dt))
+//             .map_err(|e| format!("parse timestamp {:?}: {}", parts[0], e))?;
+//         let ticker = parts[1].trim().to_string();
+//         let yes_ask: f64 = parts[2]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse yes_ask: {}", parts[2]))?;
+//         let yes_bid: f64 = parts[3]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse yes_bid: {}", parts[3]))?;
+//         let no_ask: f64 = parts[4]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse no_ask: {}", parts[4]))?;
+//         let no_bid: f64 = parts[5]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse no_bid: {}", parts[5]))?;
 
-        rows.push(MarketDataRow {
-            timestamp,
-            ticker,
-            asset: String::new(),
-            yes_ask,
-            yes_bid,
-            no_ask,
-            no_bid,
-        });
-    }
-    Ok(rows)
-}
+//         rows.push(MarketDataRow {
+//             timestamp,
+//             ticker,
+//             asset: String::new(),
+//             yes_ask,
+//             yes_bid,
+//             no_ask,
+//             no_bid,
+//         });
+//     }
+//     Ok(rows)
+// }

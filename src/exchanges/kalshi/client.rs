@@ -48,7 +48,7 @@ pub struct KalshiClient {
 const BATCH_SIZE: usize = 1000;
 const FLUSH_INTERVAL_MS: u64 = 5000;  // Flush every 5 seconds
 const CHANNEL_BUFFER_SIZE: usize = 50000;
-const FETCH_AFTER_CLOSE_SECS: i64 = 1;
+const FETCH_AFTER_CLOSE_SECS: i64 = 10;
 
 const INITIAL_BACKOFF_SECS: u64 = 1;
 const MAX_BACKOFF_SECS: u64 = 60;
@@ -137,11 +137,11 @@ impl KalshiClient {
             .map(|u| (u.ticker, u.asset, u.timestamp, u.yes_ask, u.yes_bid, u.no_ask, u.no_bid))
             .collect();
 
-        if let Err(e) = db.insert_market_data_batch(records).await {
-            error!("Failed to batch insert market data: {}", e);
-        } else {
-            info!("📝 Flushed {} market data records to DB", count);
-        }
+        // if let Err(e) = db.insert_market_data_batch(records).await {
+        //     error!("Failed to batch insert market data: {}", e);
+        // } else {
+        //     info!("📝 Flushed {} market data records to DB", count);
+        // }
     }
 
     pub async fn connect(&mut self) -> Result<()> {
@@ -436,14 +436,14 @@ impl KalshiClient {
                         tracked.extra.get("floor_strike")?.as_f64()
                     });
 
-                if let Err(e) = self.db.insert_market_info(
-                    &lifecycle_msg.market_ticker,
-                    Utc::now(),
-                    strike_price,
-                    result,
-                ).await {
-                    error!("Failed to insert market info: {}", e);
-                }
+                // if let Err(e) = self.db.insert_market_info(
+                //     &lifecycle_msg.market_ticker,
+                //     Utc::now(),
+                //     strike_price,
+                //     result,
+                // ).await {
+                //     error!("Failed to insert market info: {}", e);
+                // }
             }
 
             info!("🔴 Market {} closed (lifecycle), unsubscribing for series {}...", 
@@ -507,8 +507,8 @@ impl KalshiClient {
         let top_ask_no = ob.no_asks.first().map(|l| format!("${:.4} @ {}", l.price, l.quantity)).unwrap_or_else(|| "N/A".to_string());
         
         info!(
-            "📚 Kalshi {} | Top bid YES: {} | Top ask YES: {} | Top bid NO: {} | Top ask NO: {}",
-            ob.market_ticker, top_bid, top_ask, top_bid_no, top_ask_no
+            "📚 Kalshi {} | Top bid YES: {} | Top ask YES: {} | Top bid NO: {} | Top ask NO: {} at time: {}",
+            ob.market_ticker, top_bid, top_ask, top_bid_no, top_ask_no, Utc::now()
         );
     }
 
