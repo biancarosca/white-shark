@@ -15,34 +15,42 @@ pub async fn run(config: Config) -> Result<()> {
 
     let db = Arc::new(Db::new(&config.database.url).await?);
 
-    info!("Kalshi symbols: {:?}", config.kalshi.tracked_symbols);
+    db.export_ticker_to_csv("KXBTC15M-26FEB072045-45", "btc_1.csv").await?;
+    db.export_ticker_to_csv("KXETH15M-26FEB072045-45", "eth_1.csv").await?;
+    db.export_ticker_to_csv("KXSOL15M-26FEB072045-45", "sol_1.csv").await?;
 
-    let (price_tx, _price_rx) = mpsc::channel(128);
+    db.export_ticker_to_csv("KXBTC15M-26FEB122330-30", "btc_1.csv").await?;
+    db.export_ticker_to_csv("KXETH15M-26FEB122330-30", "eth_2.csv").await?;
+    db.export_ticker_to_csv("KXSOL15M-26FEB122330-30", "sol_3.csv").await?;
 
-    let kalshi_config = config.kalshi.clone();
-    let mut kalshi_client = KalshiClient::new(kalshi_config, db)?;
+    // info!("Kalshi symbols: {:?}", config.kalshi.tracked_symbols);
 
-    // if let Err(e) = kalshi_client.start().await {
-    //     error!("Kalshi client error: {}", e);
-    // }
+    // let (price_tx, _price_rx) = mpsc::channel(128);
 
-    let kalshi_handle = tokio::spawn(async move {
-        if let Err(e) = kalshi_client.start().await {
-            error!("Kalshi client error: {}", e);
-        }
-    });
+    // let kalshi_config = config.kalshi.clone();
+    // let mut kalshi_client = KalshiClient::new(kalshi_config, db)?;
 
-    let binance_symbols = config.binance.tracked_symbols.clone();
-    let mut binance = BinanceClient::new(config.binance.clone());
+    // // if let Err(e) = kalshi_client.start().await {
+    // //     error!("Kalshi client error: {}", e);
+    // // }
 
-    let binance_handle = tokio::spawn(async move {
-        if let Err(e) = binance.start(&binance_symbols, price_tx).await {
-            error!("Binance client error: {}", e);
-        }
-    });
+    // let kalshi_handle = tokio::spawn(async move {
+    //     if let Err(e) = kalshi_client.start().await {
+    //         error!("Kalshi client error: {}", e);
+    //     }
+    // });
 
-    //Wait for both — if one crashes, the other keeps running
-    let _ = tokio::join!(kalshi_handle, binance_handle);
+    // let binance_symbols = config.binance.tracked_symbols.clone();
+    // let mut binance = BinanceClient::new(config.binance.clone());
+
+    // let binance_handle = tokio::spawn(async move {
+    //     if let Err(e) = binance.start(&binance_symbols, price_tx).await {
+    //         error!("Binance client error: {}", e);
+    //     }
+    // });
+
+    // //Wait for both — if one crashes, the other keeps running
+    // let _ = tokio::join!(kalshi_handle, binance_handle);
 
     Ok(())
 }
