@@ -19,9 +19,9 @@ pub async fn run(config: Config) -> Result<()> {
     db.export_ticker_to_csv("KXETH15M-26FEB072045-45", "eth_1.csv").await?;
     db.export_ticker_to_csv("KXSOL15M-26FEB072045-45", "sol_1.csv").await?;
 
-    db.export_ticker_to_csv("KXBTC15M-26FEB122330-30", "btc_1.csv").await?;
+    db.export_ticker_to_csv("KXBTC15M-26FEB122330-30", "btc_2.csv").await?;
     db.export_ticker_to_csv("KXETH15M-26FEB122330-30", "eth_2.csv").await?;
-    db.export_ticker_to_csv("KXSOL15M-26FEB122330-30", "sol_3.csv").await?;
+    db.export_ticker_to_csv("KXSOL15M-26FEB122330-30", "sol_2.csv").await?;
 
     // info!("Kalshi symbols: {:?}", config.kalshi.tracked_symbols);
 
