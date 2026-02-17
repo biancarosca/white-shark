@@ -3,7 +3,7 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone)]
 pub struct Config {
     pub kalshi: KalshiConfig,
-    pub binance: BinanceConfig,
+    // pub binance: BinanceConfig,
     pub database: DatabaseConfig,
 }
 
@@ -51,13 +51,13 @@ impl Config {
             .map(|s| s.trim().to_uppercase())
             .collect();
 
-        let binance_api_key = std::env::var("BINANCE_API_KEY").ok();
+        // let binance_api_key = std::env::var("BINANCE_API_KEY").ok();
 
-        let binance_symbols = std::env::var("BINANCE_TRACKED_SYMBOLS")
-            .map_err(|_| Error::Config("BINANCE_TRACKED_SYMBOLS not set".into()))?
-            .split(',')
-            .map(|s| s.trim().to_uppercase())
-            .collect();
+        // let binance_symbols = std::env::var("BINANCE_TRACKED_SYMBOLS")
+        //     .map_err(|_| Error::Config("BINANCE_TRACKED_SYMBOLS not set".into()))?
+        //     .split(',')
+        //     .map(|s| s.trim().to_uppercase())
+        //     .collect();
 
         let database_url = std::env::var("DATABASE_URL")
             .map_err(|_| Error::Config("DATABASE_URL not set".into()))?;
@@ -69,10 +69,10 @@ impl Config {
                 private_key_path: kalshi_private_key_path,
                 tracked_symbols: kalshi_symbols,
             },
-            binance: BinanceConfig {
-                api_key: binance_api_key,
-                tracked_symbols: binance_symbols
-            },
+            // binance: BinanceConfig {
+            //     api_key: binance_api_key,
+            //     tracked_symbols: binance_symbols
+            // },
             database: DatabaseConfig {
                 url: database_url,
             },
