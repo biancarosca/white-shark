@@ -1,6 +1,6 @@
 //! Kalshi WebSocket client
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -19,13 +19,13 @@ type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
 
 pub struct KalshiWebSocket {
     url: String,
-    auth: KalshiAuth,
+    auth: Arc<KalshiAuth>,
     stream: Option<WsStream>,
     message_id: AtomicU64,
 }
 
 impl KalshiWebSocket {
-    pub fn new(url: &str, auth: KalshiAuth) -> Self {
+    pub fn new(url: &str, auth: Arc<KalshiAuth>) -> Self {
         Self {
             url: url.to_string(),
             auth,

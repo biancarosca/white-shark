@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use reqwest::Client as HttpClient;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
@@ -12,11 +14,11 @@ use crate::exchanges::kalshi::{BatchCancelOrdersRequest, KalshiBatchCancelOrders
 
 pub struct KalshiApi {
     http: HttpClient,
-    auth: std::sync::Arc<KalshiAuth>,
+    auth: Arc<KalshiAuth>,
 }
 
 impl KalshiApi {
-    pub fn new(auth: std::sync::Arc<KalshiAuth>) -> Self {
+    pub fn new(auth: Arc<KalshiAuth>) -> Self {
         Self {
             http: HttpClient::new(),
             auth,

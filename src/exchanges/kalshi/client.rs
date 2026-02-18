@@ -10,6 +10,7 @@ use tracing::{info, warn, error};
 use super::api::KalshiApi;
 use super::auth::KalshiAuth;
 use super::models::*;
+use super::utils::{maintenance_sleep_duration, next_maintenance_start};
 use super::websocket::KalshiWebSocket;
 use crate::config::KalshiConfig;
 use crate::db::main::Db;
@@ -30,7 +31,7 @@ struct MarketDataUpdate {
 }
 
 pub struct KalshiClient {
-    config: KalshiConfig,
+    auth: Arc<KalshiAuth>,
     api: KalshiApi,
     ws: Option<Arc<Mutex<KalshiWebSocket>>>,
     pub state: KalshiState,
@@ -48,30 +49,21 @@ pub struct KalshiClient {
 const BATCH_SIZE: usize = 1000;
 const FLUSH_INTERVAL_MS: u64 = 5000;  // Flush every 5 seconds
 const CHANNEL_BUFFER_SIZE: usize = 50000;
-const FETCH_AFTER_CLOSE_SECS: i64 = 10;
+const FETCH_AFTER_CLOSE_SECS: i64 = 3;
 
 const INITIAL_BACKOFF_SECS: u64 = 1;
 const MAX_BACKOFF_SECS: u64 = 60;
 
 impl KalshiClient {
-    fn create_auth(config: &KalshiConfig) -> Result<KalshiAuth> {
-        if let Some(ref pem_content) = config.private_key {
-            KalshiAuth::from_pem_content(&config.api_key_id, pem_content)
-        } else if let Some(ref path) = config.private_key_path {
-            KalshiAuth::from_file(&config.api_key_id, path)
-        } else {
-            Err(Error::Config("No private key configured".into()))
-        }
-    }
-
     pub fn new(config: KalshiConfig, db: Arc<Db>) -> Result<Self> {
-        let auth = Self::create_auth(&config)?;
+        let auth = KalshiAuth::create_auth(&config)?;
         let auth_arc = Arc::new(auth);
         let api = KalshiApi::new(auth_arc.clone());
 
         if config.tracked_symbols.is_empty() {
             return Err(Error::Config("No tracked symbols configured".into()));
         }
+
         let series_tickers = config.tracked_symbols.clone();
 
         let (market_data_tx, market_data_rx) = mpsc::channel::<MarketDataUpdate>(CHANNEL_BUFFER_SIZE);
@@ -79,7 +71,7 @@ impl KalshiClient {
         Self::spawn_market_data_writer(db.clone(), market_data_rx);
 
         Ok(Self {
-            config,
+            auth: auth_arc.clone(),
             api,
             ws: None,
             state: KalshiState::new(),
@@ -137,16 +129,15 @@ impl KalshiClient {
             .map(|u| (u.ticker, u.asset, u.timestamp, u.yes_ask, u.yes_bid, u.no_ask, u.no_bid))
             .collect();
 
-        // if let Err(e) = db.insert_market_data_batch(records).await {
-        //     error!("Failed to batch insert market data: {}", e);
-        // } else {
-        //     info!("📝 Flushed {} market data records to DB", count);
-        // }
+        if let Err(e) = db.insert_market_data_batch(records).await {
+            error!("Failed to batch insert market data: {}", e);
+        } else {
+            info!("📝 Flushed {} market data records to DB", count);
+        }
     }
 
     pub async fn connect(&mut self) -> Result<()> {
-        let auth = Self::create_auth(&self.config)?;
-        let mut ws = KalshiWebSocket::new(KALSHI_WS_URL, auth);
+        let mut ws = KalshiWebSocket::new(KALSHI_WS_URL, self.auth.clone());
         ws.connect().await?;
         self.ws = Some(Arc::new(Mutex::new(ws)));
         Ok(())
@@ -178,6 +169,14 @@ impl KalshiClient {
         let mut backoff_secs = INITIAL_BACKOFF_SECS;
 
         loop {
+            if let Some(sleep_dur) = maintenance_sleep_duration() {
+                info!("🛑 Maintenance window active, sleeping for {}s until it ends...", sleep_dur.as_secs());
+                let _ = self.disconnect().await;
+                tokio::time::sleep(sleep_dur).await;
+                info!("✅ Maintenance window ended, resuming...");
+                backoff_secs = INITIAL_BACKOFF_SECS;
+            }
+
             let (result, was_stable) = self.run_connection_loop().await;
             
             match result {
@@ -258,6 +257,7 @@ impl KalshiClient {
         let mut received_messages = false;
         
         let mut fetch_deadline = self.next_15min_interval();
+        let maintenance_deadline = next_maintenance_start();
 
         loop {
             tokio::select! {
@@ -281,6 +281,10 @@ impl KalshiClient {
                     }
 
                     fetch_deadline = self.next_15min_interval();
+                }
+                _ = sleep_until(maintenance_deadline) => {
+                    info!("🛑 Approaching maintenance window, disconnecting...");
+                    break;
                 }
             }
         }
@@ -436,14 +440,14 @@ impl KalshiClient {
                         tracked.extra.get("floor_strike")?.as_f64()
                     });
 
-                // if let Err(e) = self.db.insert_market_info(
-                //     &lifecycle_msg.market_ticker,
-                //     Utc::now(),
-                //     strike_price,
-                //     result,
-                // ).await {
-                //     error!("Failed to insert market info: {}", e);
-                // }
+                if let Err(e) = self.db.insert_market_info(
+                    &lifecycle_msg.market_ticker,
+                    Utc::now(),
+                    strike_price,
+                    result,
+                ).await {
+                    error!("Failed to insert market info: {}", e);
+                }
             }
 
             info!("🔴 Market {} closed (lifecycle), unsubscribing for series {}...", 
@@ -665,12 +669,24 @@ impl KalshiClient {
             
             if markets.is_empty() {
                 warn!("No open markets found for series: {}", series_ticker);
+                self.current_markets.remove(series_ticker);
                 continue;
             }
 
             let next_market = markets[0].clone();
-            
+
+            if !matches!(next_market.status, KalshiMarketStatus::Open | KalshiMarketStatus::Active) {
+                info!("Fetched market {} is {:?}, skipping", next_market.ticker, next_market.status);
+                self.current_markets.remove(series_ticker);
+                continue;
+            }
+
             if let Some(old_market) = self.current_markets.get(series_ticker) {
+                if old_market.ticker == next_market.ticker {
+                    info!("API returned same market {}, skipping", next_market.ticker);
+                    self.current_markets.remove(series_ticker);
+                    continue;
+                }
                 info!("🔄 Replacing market {} with {} for series {}", old_market.ticker, next_market.ticker, series_ticker);
             } else {
                 info!("📡 Setting initial market for {}: {}", series_ticker, next_market.ticker);
@@ -683,10 +699,6 @@ impl KalshiClient {
             if let Some(floor_strike) = next_market.extra.get("floor_strike") {
                 info!("💰 Floor strike for {}: {}", next_market.ticker, floor_strike);
             }
-        }
-
-        if self.current_markets.is_empty() {
-            return Err(Error::Other("No open markets found for any tracked series".into()));
         }
 
         Ok(())
@@ -708,14 +720,41 @@ impl KalshiClient {
 
     async fn handle_due_markets(&mut self) -> Result<()> {
         info!("⏰ 15-minute interval reached, rotating all markets...");
-        
-        if let Err(e) = self.fetch_and_set_all_markets().await {
-            error!("Failed to fetch all markets: {}", e);
-            return Err(e);
+    
+        let max_attempts = 10;
+        let mut attempt = 0;
+    
+        loop {
+            attempt += 1;
+            if let Err(e) = self.fetch_and_set_all_markets().await {
+                error!("Failed to fetch all markets (attempt {}): {}", attempt, e);
+                if attempt >= max_attempts {
+                    return Err(e);
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                continue;
+            }
+    
+            let all_open = self.series_tickers.iter().all(|st| {
+                self.current_markets.get(st)
+                    .map(|m| matches!(m.status, KalshiMarketStatus::Open | KalshiMarketStatus::Active))
+                    .unwrap_or(false)
+            });
+    
+            if all_open {
+                break;
+            }
+    
+            if attempt >= max_attempts {
+                warn!("Gave up after {} attempts, some markets still not open", max_attempts);
+                break;
+            }
+    
+            info!("Not all markets open yet, retrying in 3s (attempt {}/{})", attempt, max_attempts);
+            tokio::time::sleep(Duration::from_secs(3)).await;
         }
-        
+    
         self.subscribe_to_all_markets().await?;
-            
         Ok(())
     }
 }

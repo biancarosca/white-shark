@@ -12,18 +12,17 @@ use sha2::Sha256;
 
 use crate::{config::KalshiConfig, error::{Error, Result}};
 
+#[derive(Debug, Clone)]
 pub struct KalshiAuth {
     private_key: RsaPrivateKey,
     api_key_id: String,
 }
 
 impl KalshiAuth {
-    /// Create auth from PEM content string (for environment variable)
     pub fn from_pem_content(api_key_id: &str, pem_content: &str) -> Result<Self> {
         Self::parse_pem(api_key_id, pem_content.as_bytes())
     }
 
-    /// Create auth from PEM file path (for local development)
     pub fn from_file(api_key_id: &str, private_key_path: &str) -> Result<Self> {
         let key_data = std::fs::read(private_key_path)
             .map_err(|e| Error::Auth(format!("Failed to read private key: {}", e)))?;
