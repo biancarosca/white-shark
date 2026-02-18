@@ -8,6 +8,7 @@ use super::models::{
 };
 use crate::error::{Error, Result};
 use crate::constants::KALSHI_REST_URL;
+use crate::exchanges::kalshi::{BatchCancelOrdersRequest, KalshiBatchCancelOrdersResponse, KalshiCancelOrder, OrderType};
 
 pub struct KalshiApi {
     http: HttpClient,
@@ -62,15 +63,14 @@ impl KalshiApi {
             params.push(format!("limit={}", l));
         }
         
-        let url_path = "/markets";
+        let url_path = "/trade-api/v2/markets";
         let mut url = format!("{}{}", KALSHI_REST_URL, url_path);
         
         if !params.is_empty() {
             url = format!("{}?{}", url, params.join("&"));
         }
         
-        let auth_path = "/trade-api/v2/markets";
-        let auth_headers = self.auth_headers("GET", auth_path)?;
+        let auth_headers = self.auth_headers("GET", url_path)?;
 
         let resp = self
             .http
@@ -140,31 +140,14 @@ impl KalshiApi {
         Ok(all_markets)
     }
 
-    /// Create a market order on Kalshi
-    /// 
-    /// # Arguments
-    /// * `ticker` - The market ticker (e.g., "KXBTC-25JAN31-B55000")
-    /// * `action` - Buy or Sell
-    /// * `side` - Yes or No
-    /// * `count` - Number of contracts
-    pub async fn create_market_order(
+    pub async fn _base_create_order(
         &self,
-        ticker: &str,
-        action: OrderAction,
-        side: OrderSide,
-        count: i64,
+        request: CreateOrderRequest,
     ) -> Result<CreateOrderResponse> {
-        let request = CreateOrderRequest::market_order(
-            ticker.to_string(),
-            action,
-            side,
-            count,
-        );
-
-        let url_path = "/portfolio/orders";
+        let url_path = "/trade-api/v2/portfolio/orders";
         let url = format!("{}{}", KALSHI_REST_URL, url_path);
-        let auth_path = "/trade-api/v2/portfolio/orders";
-        let auth_headers = self.auth_headers("POST", auth_path)?;
+  
+        let auth_headers = self.auth_headers("POST", url_path)?;
 
         let resp = self
             .http
@@ -185,6 +168,71 @@ impl KalshiApi {
             .json()
             .await
             .map_err(|e| Error::Http(e.to_string()))?;
+
+        Ok(data)
+    }
+
+    pub async fn create_order(
+        &self,
+        ticker: &str,
+        action: OrderAction,
+        side: OrderSide,
+        count: u64,
+        price: u64,
+        order_type: OrderType,
+    ) -> Result<CreateOrderResponse> {
+        let request: CreateOrderRequest;
+
+        if order_type == OrderType::Market {
+            request = CreateOrderRequest::market_order(
+                ticker.to_string(),
+                action,
+                side,
+                count,
+                price,
+            );
+        } else {
+            request = CreateOrderRequest::limit_order(
+                ticker.to_string(),
+                action,
+                side,
+                count,
+                price,
+            );
+        }
+
+        Ok(self._base_create_order(request).await?)
+    }
+
+    pub async fn batch_cancel_orders(
+        &self,
+        order_ids: &[&str],
+    ) -> Result<KalshiBatchCancelOrdersResponse> {
+        let url_path = "/trade-api/v2/portfolio/orders/batched";
+        let url = format!("{}{}", KALSHI_REST_URL, url_path);
+  
+        let auth_headers = self.auth_headers("DELETE", url_path)?;
+
+        let request = BatchCancelOrdersRequest {
+            orders: order_ids.iter().map(|id| KalshiCancelOrder { order_id: id.to_string() }).collect(),
+        };
+
+        let resp = self
+            .http
+            .delete(&url)
+            .headers(auth_headers)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Http(format!("HTTP {}: {}", status, body)));
+        }
+
+        let data: KalshiBatchCancelOrdersResponse = resp.json().await.map_err(|e| Error::Http(e.to_string()))?;
 
         Ok(data)
     }

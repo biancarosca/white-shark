@@ -390,6 +390,14 @@ pub enum OrderAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeInForce {
+    FillOrKill,
+    GoodTillCanceled,
+    ImmediateOrCancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderType {
     Market,
@@ -401,35 +409,48 @@ pub struct CreateOrderRequest {
     pub ticker: String,
     pub action: OrderAction,
     pub side: OrderSide,
-    #[serde(rename = "type")]
-    pub order_type: OrderType,
-    pub count: i64,
+    pub time_in_force: TimeInForce,
+    pub count: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub yes_price: Option<i64>,
+    pub yes_price: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub no_price: Option<i64>,
+    pub no_price: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub expiration_ts: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sell_position_floor: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub buy_max_cost: Option<i64>,
+    pub post_only: Option<bool>,
 }
 
 impl CreateOrderRequest {
-    pub fn market_order(ticker: String, action: OrderAction, side: OrderSide, count: i64) -> Self {
-        Self {
+    pub fn get_base_order(ticker: String, action: OrderAction, side: OrderSide, count: u64, price: u64) -> Self {
+        let mut base = Self {
             ticker,
             action,
             side,
-            order_type: OrderType::Market,
+            time_in_force: TimeInForce::ImmediateOrCancel,
             count,
             yes_price: None,
             no_price: None,
-            expiration_ts: None,
-            sell_position_floor: None,
-            buy_max_cost: None,
+            post_only: None,
+        };
+
+        if action == OrderAction::Buy {
+            base.yes_price = Some(price);
+        } else {
+            base.no_price = Some(price);
         }
+
+        base
+    }
+    pub fn market_order(ticker: String, action: OrderAction, side: OrderSide, count: u64, price: u64) -> Self {
+        let mut base = Self::get_base_order(ticker, action, side, count, price);
+        base.time_in_force = TimeInForce::ImmediateOrCancel;
+        base
+    }
+
+    pub fn limit_order(ticker: String, action: OrderAction, side: OrderSide, count: u64, price: u64) -> Self {
+        let mut base = Self::get_base_order(ticker, action, side, count, price);
+        base.time_in_force = TimeInForce::GoodTillCanceled;
+        base.post_only = Some(true);
+        base
     }
 }
 
@@ -441,32 +462,69 @@ pub struct CreateOrderResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct KalshiOrder {
     pub order_id: String,
+    pub user_id: String,
+    pub client_order_id: String,
     pub ticker: String,
-    pub action: String,
     pub side: String,
+    pub action: String,
     #[serde(rename = "type")]
     pub order_type: String,
     pub status: String,
+    pub yes_price: i64,
+    pub no_price: i64,
+    pub yes_price_dollars: String,
+    pub no_price_dollars: String,
+    pub fill_count: i64,
+    pub fill_count_fp: String,
+    pub remaining_count: i64,
+    pub remaining_count_fp: String,
+    pub initial_count: i64,
+    pub initial_count_fp: String,
+    pub taker_fees: i64,
+    pub maker_fees: i64,
+    pub taker_fill_cost: i64,
+    pub maker_fill_cost: i64,
+    pub taker_fill_cost_dollars: String,
+    pub maker_fill_cost_dollars: String,
+    pub queue_position: i64,
     #[serde(default)]
-    pub yes_price: Option<i64>,
+    pub taker_fees_dollars: Option<String>,
     #[serde(default)]
-    pub no_price: Option<i64>,
-    #[serde(default)]
-    pub created_time: Option<String>,
+    pub maker_fees_dollars: Option<String>,
     #[serde(default)]
     pub expiration_time: Option<String>,
     #[serde(default)]
-    pub close_cancel_count: Option<i64>,
+    pub created_time: Option<String>,
     #[serde(default)]
-    pub place_count: Option<i64>,
+    pub last_update_time: Option<String>,
     #[serde(default)]
-    pub decrease_count: Option<i64>,
+    pub self_trade_prevention_type: Option<String>,
     #[serde(default)]
-    pub maker_fill_count: Option<i64>,
+    pub order_group_id: Option<String>,
     #[serde(default)]
-    pub taker_fill_count: Option<i64>,
+    pub cancel_order_on_pause: bool,
     #[serde(default)]
-    pub taker_fill_cost: Option<i64>,
-    #[serde(default)]
-    pub taker_fees: Option<i64>,
+    pub subaccount_number: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchCancelOrdersRequest {
+    pub orders: Vec<KalshiCancelOrder>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct KalshiCancelOrder {
+    pub order_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct KalshiBatchCancelOrdersResponse {
+    pub orders: Vec<KalshiBatchCancelOrderResponse>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct KalshiBatchCancelOrderResponse {
+    pub order_id: String,
+    pub reduced_by: u64,
+    pub reduced_by_fp: String,
 }

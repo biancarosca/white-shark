@@ -10,7 +10,7 @@ use rsa::{
 };
 use sha2::Sha256;
 
-use crate::error::{Error, Result};
+use crate::{config::KalshiConfig, error::{Error, Result}};
 
 pub struct KalshiAuth {
     private_key: RsaPrivateKey,
@@ -82,6 +82,16 @@ impl KalshiAuth {
 
     pub fn generate_ws_headers(&self) -> Result<AuthHeaders> {
         self.generate_headers("GET", "/trade-api/ws/v2")
+    }
+
+    pub fn create_auth(config: &KalshiConfig) -> Result<KalshiAuth> {
+        if let Some(ref pem_content) = config.private_key {
+            KalshiAuth::from_pem_content(&config.api_key_id, pem_content)
+        } else if let Some(ref path) = config.private_key_path {
+            KalshiAuth::from_file(&config.api_key_id, path)
+        } else {
+            Err(Error::Config("No private key configured".into()))
+        }
     }
 }
 
