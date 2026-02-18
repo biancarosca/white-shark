@@ -37,11 +37,15 @@ impl ClientContext {
     }
 
     pub fn resolve_series_ticker(&self, market_ticker: &str) -> Option<String> {
-        self.current_markets
-            .iter()
-            .find(|(_, m)| m.ticker == market_ticker)
-            .map(|(series, _)| series.clone())
-            .or_else(|| self.market_to_series.get(market_ticker).cloned())
+        self.market_to_series
+            .get(market_ticker)
+            .cloned()
+            .or_else(|| {
+                self.current_markets
+                    .iter()
+                    .find(|(_, m)| m.ticker == market_ticker)
+                    .map(|(series, _)| series.clone())
+            })
     }
 
     pub fn queue_market_data_update(&self, ob: &KalshiOrderbook) {

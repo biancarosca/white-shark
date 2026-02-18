@@ -1,18 +1,15 @@
-//! Kalshi WebSocket client
-
 use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
 use tokio_native_tls::TlsConnector;
 use tokio_tungstenite::tungstenite::handshake::client::generate_key;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use super::auth::KalshiAuth;
-use super::models::*;
+use super::models::{KalshiChannel, KalshiWsMessage, SubscribeMessage, UnsubscribeMessage};
 use crate::error::{Error, Result};
 
 type WsStream = WebSocketStream<tokio_native_tls::TlsStream<TcpStream>>;
@@ -207,36 +204,4 @@ impl KalshiWebSocket {
         }
     }
 
-    pub async fn run(
-        &mut self,
-        msg_tx: mpsc::Sender<KalshiWsMessage>,
-    ) -> Result<()> {
-        info!("🪁 Starting Kalshi WebSocket message loop");
-
-        loop {
-            match self.recv().await {
-                Ok(Some(msg)) => {
-                    if let Err(e) = msg_tx.send(msg).await {
-                        error!("Failed to send message to state manager: {}", e);
-                        break;
-                    }
-                }
-                Ok(None) => {
-                    if self.stream.is_none() {
-                        warn!("WebSocket connection lost, exiting message loop");
-                        break;
-                    }
-                    continue;
-                }
-                Err(e) => {
-                    error!("WebSocket receive error: {}", e);
-                    self.stream = None;
-                    break;
-                }
-            }
-        }
-
-        warn!("WebSocket message loop ended");
-        Ok(())
-    }
 }

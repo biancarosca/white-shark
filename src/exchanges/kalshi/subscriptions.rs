@@ -42,7 +42,7 @@ impl SubscriptionManager {
     }
 
     pub async fn fetch_and_set_all(ctx: &mut ClientContext, api: &KalshiApi) -> Result<()> {
-        for series_ticker in &ctx.series_tickers.clone() {
+        for series_ticker in &ctx.series_tickers {
             if let Some(existing) = ctx.current_markets.get(series_ticker) {
                 if matches!(existing.status, KalshiMarketStatus::Open | KalshiMarketStatus::Active) {
                     continue;

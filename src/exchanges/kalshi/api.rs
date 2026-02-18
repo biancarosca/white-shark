@@ -93,8 +93,6 @@ impl KalshiApi {
             .await
             .map_err(|e| Error::Http(e.to_string()))?;
 
-        println!("data {:?}", data);
-
         Ok(data)
     }
 
