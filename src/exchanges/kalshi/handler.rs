@@ -73,6 +73,11 @@ impl MessageHandler {
         };
 
         let ticker = snapshot.market_ticker.clone();
+        if ctx.resolve_series_ticker(&ticker).is_none() {
+            info!("Skipping orderbook snapshot data for unknown/expired market: {}", ticker);
+            return Ok(());
+        }
+
         let mut entry = ctx
             .state
             .orderbooks
@@ -95,11 +100,17 @@ impl MessageHandler {
             }
         };
 
+        let ticker = delta.market_ticker.clone();
+        if ctx.resolve_series_ticker(&ticker).is_none() {
+            info!("Skipping orderbook delta data for unknown/expired market: {}", ticker);
+            return Ok(());
+        }
+
         let mut entry = ctx
             .state
             .orderbooks
-            .entry(delta.market_ticker.clone())
-            .or_insert_with(|| KalshiOrderbook::new_empty(delta.market_ticker.clone()));
+            .entry(ticker.clone())
+            .or_insert_with(|| KalshiOrderbook::new_empty(ticker));
 
         if let Err(e) = entry.apply_delta(&delta) {
             warn!("{}", e);
@@ -167,13 +178,15 @@ impl MessageHandler {
                     tracked.extra.get("floor_strike")?.as_f64()
                 });
 
-            if let Err(e) = ctx
-                .db
-                .insert_market_info(&msg.market_ticker, Utc::now(), strike_price, result)
-                .await
-            {
-                error!("Failed to insert market info: {}", e);
-            }
+            let ticker = msg.market_ticker.clone();
+            let result = result.clone();
+            let db = ctx.db.clone();
+            let now = Utc::now();
+            tokio::spawn(async move {
+                if let Err(e) = db.insert_market_info(&ticker, now, strike_price, &result).await {
+                    error!("Failed to insert market info: {}", e);
+                }
+            });
         }
 
         info!(

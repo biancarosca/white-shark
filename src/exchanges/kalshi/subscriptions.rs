@@ -98,6 +98,9 @@ impl SubscriptionManager {
     ) -> Result<()> {
         info!("⏰ 15-minute interval reached, rotating all markets...");
         ctx.current_markets.clear();
+        ctx.market_to_series.clear();
+        ctx.state.orderbooks.clear();
+        ctx.state.tracked_markets.clear();
 
         let mut attempt = 0;
         loop {

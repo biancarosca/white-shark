@@ -52,7 +52,7 @@ impl ClientContext {
         let asset = match self.resolve_series_ticker(&ob.market_ticker) {
             Some(s) => s,
             None => {
-                error!("No series ticker found for market: {}", ob.market_ticker);
+                info!("Skipping market data for unknown/expired market: {}", ob.market_ticker);
                 return;
             }
         };

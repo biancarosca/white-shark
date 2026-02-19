@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::{mpsc, Mutex};
-use tokio::time::sleep_until;
+use tokio::time::{sleep_until, Instant};
 use tracing::{error, info, warn};
 
 use super::api::KalshiApi;
@@ -161,6 +161,8 @@ impl KalshiClient {
         let mut received_messages = false;
         let mut fetch_deadline = next_15min_interval();
         let maintenance_deadline = next_maintenance_start();
+        let mut last_message_at = Instant::now();
+        let mut idle_deadline = last_message_at + Duration::from_secs(WS_IDLE_RECONNECT_SECS);
 
         loop {
             tokio::select! {
@@ -168,6 +170,8 @@ impl KalshiClient {
                     match maybe_msg {
                         Some(msg) => {
                             received_messages = true;
+                            last_message_at = Instant::now();
+                            idle_deadline = last_message_at + Duration::from_secs(WS_IDLE_RECONNECT_SECS);
                             if let Err(e) = MessageHandler::handle(&mut self.ctx, msg).await {
                                 error!("Error handling message: {}", e);
                             }
@@ -186,6 +190,13 @@ impl KalshiClient {
                 }
                 _ = sleep_until(maintenance_deadline) => {
                     info!("🛑 Approaching maintenance window, disconnecting...");
+                    break;
+                }
+                _ = sleep_until(idle_deadline) => {
+                    warn!(
+                        "No WebSocket message received for {}s, reconnecting (stale connection)",
+                        WS_IDLE_RECONNECT_SECS
+                    );
                     break;
                 }
             }
