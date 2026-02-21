@@ -202,6 +202,7 @@ impl KalshiClient {
             }
         }
 
+        ws_handle.abort();
         let _ = ws_handle.await;
         (Err(Error::WebSocket("Connection lost".into())), received_messages)
     }
