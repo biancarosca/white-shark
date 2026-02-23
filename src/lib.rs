@@ -7,6 +7,7 @@ pub mod error;
 pub mod exchanges;
 pub mod logging;
 pub mod state;
+pub mod trader;
 pub mod utils;
 
 pub use config::Config;

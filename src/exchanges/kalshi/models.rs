@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::str::FromStr;
 
+use crate::trader::constants::FILL_OR_KILL_ORDER_PRICE;
+
 #[derive(Debug, Serialize)]
 pub struct SubscribeMessage {
     pub id: u64,
@@ -425,24 +427,22 @@ impl CreateOrderRequest {
             ticker,
             action,
             side,
-            time_in_force: TimeInForce::ImmediateOrCancel,
+            time_in_force: TimeInForce::FillOrKill,
             count,
             yes_price: None,
             no_price: None,
             post_only: None,
         };
 
-        if action == OrderAction::Buy {
-            base.yes_price = Some(price);
-        } else {
-            base.no_price = Some(price);
+        match side {
+            OrderSide::Yes => base.yes_price = Some(price),
+            OrderSide::No => base.no_price = Some(price),
         }
 
         base
     }
     pub fn market_order(ticker: String, action: OrderAction, side: OrderSide, count: u64, price: u64) -> Self {
-        let mut base = Self::get_base_order(ticker, action, side, count, price);
-        base.time_in_force = TimeInForce::ImmediateOrCancel;
+        let base = Self::get_base_order(ticker, action, side, count, price);
         base
     }
 
@@ -507,6 +507,12 @@ pub struct KalshiOrder {
     pub subaccount_number: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct GetOrdersResponse {
+    pub orders: Vec<KalshiOrder>,
+    pub cursor: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchCancelOrdersRequest {
     pub orders: Vec<KalshiCancelOrder>,
@@ -527,4 +533,44 @@ pub struct KalshiBatchCancelOrderResponse {
     pub order_id: String,
     pub reduced_by: u64,
     pub reduced_by_fp: String,
+}
+
+#[derive(Clone)]
+pub struct TickUpdate {
+    pub ticker: String,
+    pub asset: String,
+    pub timestamp: DateTime<Utc>,
+    pub yes_ask: f64,
+    pub yes_bid: f64,
+    pub no_ask: f64,
+    pub no_bid: f64,
+    pub yes_ask_qty: i64,
+    pub no_ask_qty: i64,
+    pub close_time: Option<DateTime<Utc>>,
+}
+
+impl TickUpdate {
+    pub fn from_orderbook(
+        ob: &KalshiOrderbook,
+        asset: String,
+        close_time: Option<DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            ticker: ob.market_ticker.clone(),
+            asset,
+            timestamp: Utc::now(),
+            yes_ask: ob.top_yes_ask(),
+            yes_bid: ob.top_yes_bid(),
+            no_ask: ob.top_no_ask(),
+            no_bid: ob.top_no_bid(),
+            yes_ask_qty: ob.yes_ask_qty_at_or_above(FILL_OR_KILL_ORDER_PRICE),
+            no_ask_qty: ob.no_ask_qty_at_or_above(FILL_OR_KILL_ORDER_PRICE),
+            close_time,
+        }
+    }
+
+    pub fn seconds_until_close(&self) -> Option<i64> {
+        self.close_time
+            .map(|ct| (ct - self.timestamp).num_seconds())
+    }
 }

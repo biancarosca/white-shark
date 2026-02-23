@@ -133,6 +133,22 @@ impl KalshiOrderbook {
         self.no_asks.first().map(|l| l.price).unwrap_or(0.0)
     }
 
+    pub fn yes_ask_qty_at_or_above(&self, min_price: f64) -> i64 {
+        self.yes_asks
+            .iter()
+            .filter(|l| l.price >= min_price - 1e-12)
+            .map(|l| l.quantity)
+            .sum()
+    }
+
+    pub fn no_ask_qty_at_or_above(&self, min_price: f64) -> i64 {
+        self.no_asks
+            .iter()
+            .filter(|l| l.price >= min_price - 1e-12)
+            .map(|l| l.quantity)
+            .sum()
+    }
+
     fn parse_dollar_levels(dollars: Vec<(String, i64)>) -> Vec<OrderbookLevel> {
         dollars
             .into_iter()

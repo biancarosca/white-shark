@@ -24,10 +24,11 @@ use crate::db::main::Db;
 use crate::error::{Error, Result};
 use crate::exchanges::kalshi::constants::*;
 use crate::state::KalshiState;
+use crate::trader::main::Trader;
 
 pub struct KalshiClient {
     auth: Arc<KalshiAuth>,
-    api: KalshiApi,
+    api: Arc<KalshiApi>,
     ws: Option<Arc<Mutex<KalshiWebSocket>>>,
     ctx: ClientContext,
 }
@@ -35,14 +36,15 @@ pub struct KalshiClient {
 impl KalshiClient {
     pub fn new(config: KalshiConfig, db: Arc<Db>) -> Result<Self> {
         let auth = Arc::new(KalshiAuth::create_auth(&config)?);
-        let api = KalshiApi::new(auth.clone());
+        let api = Arc::new(KalshiApi::new(auth.clone()));
 
         if config.tracked_symbols.is_empty() {
             return Err(Error::Config("No tracked symbols configured".into()));
         }
 
         let market_data_tx = MarketDataWriter::spawn(db.clone());
-        let ctx = ClientContext::new(config.tracked_symbols, db, market_data_tx);
+        let trading_tx = Trader::spawn(api.clone());
+        let ctx = ClientContext::new(config.tracked_symbols, db, market_data_tx, trading_tx);
 
         Ok(Self { auth, api, ws: None, ctx })
     }

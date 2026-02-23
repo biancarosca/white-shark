@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use chrono::DateTime;
 use tokio::sync::mpsc;
 use tracing::{error, info};
 
-use super::market_data::MarketDataUpdate;
 use super::models::{KalshiMarket, KalshiOrderbook};
 use crate::db::main::Db;
+use crate::exchanges::kalshi::TickUpdate;
 use crate::state::KalshiState;
 
 pub(crate) struct ClientContext {
@@ -16,14 +17,16 @@ pub(crate) struct ClientContext {
     pub series_tickers: Vec<String>,
     pub subscription_ids: HashMap<String, u64>,
     pub db: Arc<Db>,
-    pub market_data_tx: mpsc::Sender<MarketDataUpdate>,
+    pub market_data_tx: mpsc::Sender<TickUpdate>,
+    pub trading_tx: mpsc::Sender<TickUpdate>,
 }
 
 impl ClientContext {
     pub fn new(
         series_tickers: Vec<String>,
         db: Arc<Db>,
-        market_data_tx: mpsc::Sender<MarketDataUpdate>,
+        market_data_tx: mpsc::Sender<TickUpdate>,
+        trading_tx: mpsc::Sender<TickUpdate>,
     ) -> Self {
         Self {
             state: KalshiState::new(),
@@ -33,6 +36,7 @@ impl ClientContext {
             subscription_ids: HashMap::new(),
             db,
             market_data_tx,
+            trading_tx,
         }
     }
 
@@ -57,9 +61,19 @@ impl ClientContext {
             }
         };
 
-        let update = MarketDataUpdate::from_orderbook(ob, asset);
-        if let Err(e) = self.market_data_tx.try_send(update) {
+        let close_time = self
+            .state
+            .tracked_markets
+            .get(&ob.market_ticker)
+            .and_then(|m| m.close_time.as_ref().and_then(|ct| DateTime::parse_from_rfc3339(ct).ok()))
+            .map(|dt| dt.to_utc());
+
+        let update = TickUpdate::from_orderbook(ob, asset, close_time);
+        if let Err(e) = self.market_data_tx.try_send(update.clone()) {
             error!("Failed to queue market data update: {}", e);
+        }
+        if let Err(e) = self.trading_tx.try_send(update) {
+            error!("Failed to queue trading update: {}", e);
         }
     }
 

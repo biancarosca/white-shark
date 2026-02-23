@@ -1,12 +1,12 @@
 use std::sync::Arc;
-
+use tracing::info;
 use reqwest::Client as HttpClient;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use super::auth::KalshiAuth;
 use super::models::{
-    CreateOrderRequest, CreateOrderResponse, KalshiMarket, MarketsResponse,
-    OrderAction, OrderSide,
+    CreateOrderRequest, CreateOrderResponse, GetOrdersResponse, KalshiMarket,
+    KalshiOrder, MarketsResponse, OrderAction, OrderSide,
 };
 use crate::error::{Error, Result};
 use crate::constants::KALSHI_REST_URL;
@@ -169,6 +169,8 @@ impl KalshiApi {
             .await
             .map_err(|e| Error::Http(e.to_string()))?;
 
+        info!("Order created: {:?}", data);
+
         Ok(data)
     }
 
@@ -201,7 +203,68 @@ impl KalshiApi {
             );
         }
 
+        info!("Creating order: {:?}", request);
+
         Ok(self._base_create_order(request).await?)
+    }
+
+    pub async fn get_orders(
+        &self,
+        ticker: Option<&str>,
+        status: Option<&str>,
+    ) -> Result<Vec<KalshiOrder>> {
+        let url_path = "/trade-api/v2/portfolio/orders";
+
+        let mut all_orders = Vec::new();
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let mut params = vec![];
+            if let Some(t) = ticker {
+                params.push(format!("ticker={}", t));
+            }
+            if let Some(s) = status {
+                params.push(format!("status={}", s));
+            }
+            if let Some(c) = &cursor {
+                params.push(format!("cursor={}", c));
+            }
+
+            let mut url = format!("{}{}", KALSHI_REST_URL, url_path);
+            if !params.is_empty() {
+                url = format!("{}?{}", url, params.join("&"));
+            }
+
+            let auth_headers = self.auth_headers("GET", url_path)?;
+
+            let resp = self
+                .http
+                .get(&url)
+                .headers(auth_headers)
+                .send()
+                .await
+                .map_err(|e| Error::Http(e.to_string()))?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(Error::Http(format!("HTTP {}: {}", status, body)));
+            }
+
+            let data: GetOrdersResponse = resp
+                .json()
+                .await
+                .map_err(|e| Error::Http(e.to_string()))?;
+
+            all_orders.extend(data.orders);
+
+            if data.cursor.is_empty() {
+                break;
+            }
+            cursor = Some(data.cursor);
+        }
+
+        Ok(all_orders)
     }
 
     pub async fn batch_cancel_orders(
@@ -216,6 +279,8 @@ impl KalshiApi {
         let request = BatchCancelOrdersRequest {
             orders: order_ids.iter().map(|id| KalshiCancelOrder { order_id: id.to_string() }).collect(),
         };
+
+        info!("Batch canceling orders: {:?}", request);
 
         let resp = self
             .http

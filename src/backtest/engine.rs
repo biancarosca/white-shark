@@ -6,7 +6,7 @@ use tracing::info;
 
 use crate::db::main::{Db, MarketDataRow};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum TradeSide {
     YES = 1,
     NO = 2,
