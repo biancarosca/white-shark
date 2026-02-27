@@ -9,6 +9,7 @@ use crate::error::Result;
 use crate::exchanges::kalshi::{OrderSide, OrderType};
 use crate::exchanges::kalshi::api::KalshiApi;
 use crate::exchanges::kalshi::models::OrderAction;
+use crate::trader::constants::MAX_CANCEL_CHUNK_SIZE;
 
 pub struct OrderExecutor {
     api: Arc<KalshiApi>,
@@ -110,14 +111,17 @@ impl OrderExecutor {
         }
 
         info!("Batch cancelling {} orders", to_cancel.len());
-        let resp = self.api.batch_cancel_orders(&to_cancel).await?;
 
-        for cancelled in &resp.orders {
-            self.positions.mark_cancelled(&cancelled.order_id);
-            info!(
-                "Cancelled order {}: reduced by {}",
-                cancelled.order_id, cancelled.reduced_by
-            );
+        for chunk in to_cancel.chunks(MAX_CANCEL_CHUNK_SIZE) {
+            let resp = self.api.batch_cancel_orders(chunk).await?;
+
+            for cancelled in &resp.orders {
+                self.positions.mark_cancelled(&cancelled.order_id);
+                info!(
+                    "Cancelled order {}: reduced by {}",
+                    cancelled.order_id, cancelled.reduced_by
+                );
+            }
         }
 
         Ok(())

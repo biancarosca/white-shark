@@ -12,3 +12,5 @@ pub const CANCEL_BEFORE_CLOSE_SECS: i64 = 5;
 pub const ORDER_COOLDOWN_SECS: u64 = 5;
 
 pub const EXIT_ASK_THRESHOLD: f64 = 0.85;
+
+pub const MAX_CANCEL_CHUNK_SIZE: usize = 20;

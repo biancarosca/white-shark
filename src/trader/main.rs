@@ -81,7 +81,13 @@ impl Trader {
             .insert(tick.ticker.clone(), tick.clone());
 
         let decisions = self.decide(tick);
-        for decision in decisions {
+        for (i, decision) in decisions.into_iter().enumerate() {
+            if i > 0 {
+                if let OrderDecision::Place { .. } = &decision {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+            }
+
             let ticker = match &decision {
                 OrderDecision::CancelAll => {
                     self.should_exit = true;

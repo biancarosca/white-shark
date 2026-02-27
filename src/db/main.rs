@@ -1,4 +1,14 @@
-use sea_orm::{Database, DatabaseConnection, ActiveValue, EntityTrait, FromQueryResult, Statement, DbBackend};
+use sea_orm::{
+    ConnectOptions, 
+    Database, 
+    DatabaseConnection, 
+    ActiveValue, 
+    EntityTrait, 
+    FromQueryResult, 
+    Statement, 
+    DbBackend,
+    ConnectionTrait,
+};
 use sea_query::{Table, ColumnDef, MysqlQueryBuilder, Index, Alias};
 use tracing::info;
 use chrono::Utc;
@@ -6,6 +16,7 @@ use rust_decimal::Decimal;
 use std::str::FromStr;
 use std::path::Path;
 use std::io::Write;
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::db::{market_data, market_info};
@@ -32,7 +43,14 @@ pub struct Db {
 
 impl Db {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let connection = Database::connect(database_url)
+        let mut opts = ConnectOptions::new(database_url);
+        opts.max_connections(20)
+            .min_connections(5)
+            .acquire_timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(30))
+            .idle_timeout(Duration::from_secs(300));
+
+        let connection = Database::connect(opts)
             .await
             .map_err(|e| Error::Database(format!("Failed to connect to database: {}", e)))?;
         
