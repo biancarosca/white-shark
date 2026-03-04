@@ -1,7 +1,6 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 
-use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, Utc};
 use tracing::info;
 
 use crate::db::main::{Db, MarketDataRow};
@@ -47,9 +46,10 @@ pub struct BacktestEngine {
 
 const INITIAL_WALLET_BALANCE: f64 = 10000.0;
 const CONTRACTS_PER_ORDER: f64 = 2.0;
-const MAX_BID_SUM: f64 = 0.99;
+const MAX_BID_SUM: f64 = 0.97;
 const REQUOTE_THRESHOLD: f64 = 0.02;
-const MAX_IMBALANCE: f64 = 10.0;
+const MAX_IMBALANCE: f64 = 6.0;
+const MARKET_END_BUFFER_SECS: i64 = 240; // last 3 minutes of market data
 
 fn round_to_nearest_cent(price: f64) -> f64 {
     (price * 100.0).round() / 100.0
@@ -268,7 +268,15 @@ impl BacktestEngine {
 
     pub fn process_tick(&mut self, tick: &MarketDataRow) {
         self.check_fills(tick.yes_bid, tick.no_bid, tick.timestamp);
-        self.place_orders(tick.yes_bid, tick.no_bid);
+
+        let near_market_end = self.market_end
+            .map(|end| tick.timestamp >= end - Duration::seconds(MARKET_END_BUFFER_SECS))
+            .unwrap_or(false);
+
+        if !near_market_end {
+            self.place_orders(tick.yes_bid, tick.no_bid);
+        }
+
         self.set_last_asks(tick.yes_ask, tick.no_ask);
     }
 
@@ -419,28 +427,6 @@ impl BacktestEngine {
                 .expect("append backtest result to CSV");
         }
 
-        // let csv_name = "3.csv";
-        // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
-        // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
-
-        // if market_data.is_empty() {
-        //     info!("No market data to process");
-        //     return;
-        // }
-
-        // // self.asset = market_data.first().map(|r| r.ticker.clone());
-        // // self.reset();
-
-        // let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
-        // //calc 15 min from first timestamp
-        // let fifteen_min_from_first_timestamp = first_timestamp + Duration::minutes(15);
-        // self.market_end = Some(fifteen_min_from_first_timestamp);
-
-        // for tick in &market_data {
-        //     self.process_tick(tick);
-        // }
-
-        // self.log_results();
     }
 }
 
@@ -449,51 +435,3 @@ impl Default for BacktestEngine {
         Self::new()
     }
 }
-
-// fn load_market_data_from_csv(path: &str) -> Result<Vec<MarketDataRow>, Box<dyn std::error::Error>> {
-//     let file = File::open(path)?;
-//     let reader = BufReader::new(file);
-//     let mut rows = Vec::new();
-
-//     for (i, line) in reader.lines().enumerate() {
-//         let line = line?;
-//         if i == 0 {
-//             continue;
-//         }
-//         let parts: Vec<&str> = line.split(',').collect();
-//         if parts.len() < 6 {
-//             continue;
-//         }
-//         let timestamp = NaiveDateTime::parse_from_str(parts[0].trim(), "%Y-%m-%d %H:%M:%S")
-//             .map(|dt| Utc.from_utc_datetime(&dt))
-//             .map_err(|e| format!("parse timestamp {:?}: {}", parts[0], e))?;
-//         let ticker = parts[1].trim().to_string();
-//         let yes_ask: f64 = parts[2]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse yes_ask: {}", parts[2]))?;
-//         let yes_bid: f64 = parts[3]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse yes_bid: {}", parts[3]))?;
-//         let no_ask: f64 = parts[4]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse no_ask: {}", parts[4]))?;
-//         let no_bid: f64 = parts[5]
-//             .trim()
-//             .parse()
-//             .map_err(|_| format!("parse no_bid: {}", parts[5]))?;
-
-//         rows.push(MarketDataRow {
-//             timestamp,
-//             ticker,
-//             asset: String::new(),
-//             yes_ask,
-//             yes_bid,
-//             no_ask,
-//             no_bid,
-//         });
-//     }
-//     Ok(rows)
-// }
