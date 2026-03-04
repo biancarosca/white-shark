@@ -20,6 +20,10 @@ path = "src/bin/backtest.rs"
 name = "export_csv"
 path = "src/bin/export_csv.rs"
 
+[[bin]]
+name = "fetch_activity"
+path = "src/bin/fetch_activity.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.35", features = ["full", "sync", "macros", "rt-multi-thread"] }

@@ -35,31 +35,21 @@ pub struct OpenOrder {
 
 pub struct BacktestEngine {
     balance: f64,
-    yes_ladder_anchor_price: Option<f64>,
-    no_ladder_anchor_price: Option<f64>,
-    yes_ladder: Vec<f64>,
-    no_ladder: Vec<f64>,
-    open_yes_rebalance: Option<OpenOrder>,
-    open_no_rebalance: Option<OpenOrder>,
+    open_yes_order: Option<OpenOrder>,
+    open_no_order: Option<OpenOrder>,
     filled_yes_orders: Vec<FilledOrder>,
     filled_no_orders: Vec<FilledOrder>,
     asset: Option<String>,
     last_yes_ask: Option<f64>,
     last_no_ask: Option<f64>,
     market_end: Option<DateTime<Utc>>,
-    market_reached_99_yes: Option<DateTime<Utc>>,
-    market_reached_99_no: Option<DateTime<Utc>>,
-    market_yes_reversed_min_ask: Option<f64>,
-    market_yes_reversed_min_bid: Option<f64>,
-    market_no_reversed_min_ask: Option<f64>,
-    market_no_reversed_min_bid: Option<f64>,
 }
 
-const STEP: f64 = 0.02;
-const INITIAL_WALLET_BALANCE: f64 = 100.0;
-const LADDER_LENGTH: usize = 20;
-const DOLLAR_PER_ORDER: f64 = 3.0;
-const REBALANCE_SUM: f64 = 0.95;
+const INITIAL_WALLET_BALANCE: f64 = 10000.0;
+const CONTRACTS_PER_ORDER: f64 = 2.0;
+const MAX_BID_SUM: f64 = 0.99;
+const REQUOTE_THRESHOLD: f64 = 0.02;
+const MAX_IMBALANCE: f64 = 10.0;
 
 fn round_to_nearest_cent(price: f64) -> f64 {
     (price * 100.0).round() / 100.0
@@ -77,52 +67,15 @@ impl BacktestEngine {
     pub fn new() -> Self {
         Self {
             balance: INITIAL_WALLET_BALANCE,
-            yes_ladder_anchor_price: None,
-            no_ladder_anchor_price: None,
-            yes_ladder: Vec::new(),
-            no_ladder: Vec::new(),
-            open_yes_rebalance: None,
-            open_no_rebalance: None,
+            open_yes_order: None,
+            open_no_order: None,
             filled_yes_orders: Vec::new(),
             filled_no_orders: Vec::new(),
             asset: None,
             last_yes_ask: None,
             last_no_ask: None,
             market_end: None,
-            market_reached_99_yes: None,
-            market_reached_99_no: None,
-            market_yes_reversed_min_ask: None,
-            market_yes_reversed_min_bid: None,
-            market_no_reversed_min_ask: None,
-            market_no_reversed_min_bid: None,
         }
-    }
-
-    fn create_ladder(&self, anchor: f64, is_yes: bool) -> Vec<f64> {
-        let total_yes: f64 = self.filled_yes_orders.iter().map(|o| o.contracts).sum();
-        let total_no: f64 = self.filled_no_orders.iter().map(|o| o.contracts).sum();
-        let current_total_spent: f64 = self.filled_yes_orders.iter().map(|o| o.price * o.contracts).sum::<f64>() 
-                                     + self.filled_no_orders.iter().map(|o| o.price * o.contracts).sum::<f64>();
-    
-        (1..=LADDER_LENGTH)
-            .map(|i| round_to_nearest_cent(anchor - (i as f64 * STEP)).max(0.01))
-            .filter(|&p| {
-                let new_qty = DOLLAR_PER_ORDER / p;
-                
-                let (hypothetical_yes, hypothetical_no) = if is_yes {
-                    (total_yes + new_qty, total_no)
-                } else {
-                    (total_yes, total_no + new_qty)
-                };
-                
-                let imbalance = (hypothetical_yes - hypothetical_no).abs();
-                let current_spent = current_total_spent + DOLLAR_PER_ORDER;
-                
-                let max_hedge_cost = imbalance * (REBALANCE_SUM - p).max(0.10); 
-    
-                (current_spent + max_hedge_cost + DOLLAR_PER_ORDER) <= INITIAL_WALLET_BALANCE
-            })
-            .collect()
     }
 
     pub fn calculate_avg_yes_price(&self) -> Option<f64> {
@@ -141,92 +94,108 @@ impl BacktestEngine {
         Some(round_to_nearest_cent(avg))
     }
 
-    pub fn handle_ladders(&mut self, yes_ask: f64, no_ask: f64) {
-        if self.yes_ladder_anchor_price.is_none() {
-            if yes_ask < 0.60 && yes_ask > 0.0{
-                self.yes_ladder_anchor_price = Some(yes_ask);
-                self.yes_ladder = self.create_ladder(yes_ask, true);
-                info!("Yes ladder: {:?}", self.yes_ladder);   
+    fn check_fills(&mut self, yes_bid: f64, no_bid: f64, timestamp: DateTime<Utc>) {
+        if let Some(order) = self.open_yes_order.take() {
+            if yes_bid < order.price && yes_bid >= 0.0 {
+                self.balance -= order.price * order.contracts;
+                self.filled_yes_orders.push(FilledOrder {
+                    price: order.price,
+                    contracts: order.contracts,
+                    trade_type: TradeType::LADDER,
+                    trade_side: TradeSide::YES,
+                    timestamp,
+                });
+            } else {
+                self.open_yes_order = Some(order);
             }
         }
-        if self.no_ladder_anchor_price.is_none() {
-            if no_ask < 0.60 && no_ask > 0.0 {
-                self.no_ladder_anchor_price = Some(no_ask);
-                self.no_ladder = self.create_ladder(no_ask, false);
-                info!("No ladder: {:?}", self.no_ladder);
+
+        if let Some(order) = self.open_no_order.take() {
+            if no_bid < order.price && no_bid >= 0.0 {
+                self.balance -= order.price * order.contracts;
+                self.filled_no_orders.push(FilledOrder {
+                    price: order.price,
+                    contracts: order.contracts,
+                    trade_type: TradeType::LADDER,
+                    trade_side: TradeSide::NO,
+                    timestamp,
+                });
+            } else {
+                self.open_no_order = Some(order);
             }
         }
     }
 
-    pub fn handle_orders(&mut self, yes_ask: f64, no_ask: f64, timestamp: DateTime<Utc>) {
-        let mut open_orders_dollars = 0.0;
-        if let Some(open_order) = &self.open_yes_rebalance {
-            open_orders_dollars += open_order.price * open_order.contracts;
-            if yes_ask < open_order.price && yes_ask > 0.0 {
-                self.filled_yes_orders.push(FilledOrder {
-                    price: open_order.price,
-                    contracts: open_order.contracts,
-                    trade_type: TradeType::REBALANCE,
-                    trade_side: TradeSide::YES,
-                    timestamp,
-                });
-                self.open_yes_rebalance = None;
-            }
-        }
+    fn reserved_balance(&self) -> f64 {
+        let yes_reserved = self.open_yes_order.as_ref()
+            .map(|o| o.price * o.contracts).unwrap_or(0.0);
+        let no_reserved = self.open_no_order.as_ref()
+            .map(|o| o.price * o.contracts).unwrap_or(0.0);
+        yes_reserved + no_reserved
+    }
 
-        if let Some(open_order) = &self.open_no_rebalance {
-            open_orders_dollars += open_order.price * open_order.contracts;
-            if no_ask < open_order.price && no_ask > 0.0 {
-                self.filled_no_orders.push(FilledOrder {
-                    price: open_order.price,
-                    contracts: open_order.contracts,
-                    trade_type: TradeType::REBALANCE,
-                    trade_side: TradeSide::NO,
-                    timestamp,
-                });
-                self.open_no_rebalance = None;
-            }
-        }
-
-        let waiting_for_hedge = self.open_yes_rebalance.is_some() || self.open_no_rebalance.is_some();
-
-        if self.balance < DOLLAR_PER_ORDER || self.balance < open_orders_dollars || waiting_for_hedge {
+    fn place_orders(&mut self, yes_bid: f64, no_bid: f64) {
+        if yes_bid <= 0.0 || no_bid <= 0.0 {
             return;
         }
 
-        let mut filled_yes_prices = Vec::new();
-        for yes_price in &self.yes_ladder {
-            if yes_ask < *yes_price && yes_ask > 0.0 {
-                let contracts = DOLLAR_PER_ORDER / *yes_price;
-                self.balance -= DOLLAR_PER_ORDER;
-                self.filled_yes_orders.push(FilledOrder {
-                    price: *yes_price,
-                    contracts,
-                    trade_type: TradeType::LADDER,
-                    trade_side: TradeSide::YES,
-                    timestamp,
-                });
-                filled_yes_prices.push(*yes_price);
-            }
+        let bid_sum = yes_bid + no_bid;
+        if bid_sum > MAX_BID_SUM {
+            self.open_yes_order = None;
+            self.open_no_order = None;
+            return;
         }
-        self.yes_ladder.retain(|p| !filled_yes_prices.contains(p));
 
-        let mut filled_no_prices = Vec::new();
-        for no_price in &self.no_ladder {
-            if no_ask < *no_price && no_ask > 0.0 {
-                let contracts = DOLLAR_PER_ORDER / *no_price;
-                self.balance -= DOLLAR_PER_ORDER;
-                self.filled_no_orders.push(FilledOrder {
-                    price: *no_price,
-                    contracts,
-                    trade_type: TradeType::LADDER,
-                    trade_side: TradeSide::NO,
-                    timestamp,
-                });
-                filled_no_prices.push(*no_price);
+        let imbalance = self.get_contract_diff();
+        let last_yes = self.filled_yes_orders.last().map(|o| o.price);
+        let last_no = self.filled_no_orders.last().map(|o| o.price);
+
+        let yes_at_cap = imbalance >= MAX_IMBALANCE;
+        let no_at_cap = imbalance <= -MAX_IMBALANCE;
+
+        let (quote_yes, quote_no) = if yes_bid > no_bid {
+            (!yes_at_cap, imbalance > 0.0)
+        } else if no_bid > yes_bid {
+            (imbalance < 0.0, !no_at_cap)
+        } else {
+            (!yes_at_cap, !no_at_cap)
+        };
+
+        if quote_yes {
+            let pair_ok = match last_no {
+                Some(np) if imbalance < 0.0 => yes_bid + np <= MAX_BID_SUM,
+                _ => bid_sum <= MAX_BID_SUM,
+            };
+            let needs_requote = match &self.open_yes_order {
+                None => true,
+                Some(o) => (o.price - yes_bid).abs() >= REQUOTE_THRESHOLD,
+            };
+            if pair_ok && needs_requote && self.balance >= yes_bid * CONTRACTS_PER_ORDER {
+                self.open_yes_order = Some(OpenOrder { price: yes_bid, contracts: CONTRACTS_PER_ORDER });
+            } else if !pair_ok {
+                self.open_yes_order = None;
             }
+        } else {
+            self.open_yes_order = None;
         }
-        self.no_ladder.retain(|p| !filled_no_prices.contains(p));
+
+        if quote_no {
+            let pair_ok = match last_yes {
+                Some(yp) if imbalance > 0.0 => yp + no_bid <= MAX_BID_SUM,
+                _ => bid_sum <= MAX_BID_SUM,
+            };
+            let needs_requote = match &self.open_no_order {
+                None => true,
+                Some(o) => (o.price - no_bid).abs() >= REQUOTE_THRESHOLD,
+            };
+            if pair_ok && needs_requote && self.balance >= no_bid * CONTRACTS_PER_ORDER {
+                self.open_no_order = Some(OpenOrder { price: no_bid, contracts: CONTRACTS_PER_ORDER });
+            } else if !pair_ok {
+                self.open_no_order = None;
+            }
+        } else {
+            self.open_no_order = None;
+        }
     }
 
     pub fn get_contract_diff(&self) -> f64 {
@@ -248,7 +217,7 @@ impl BacktestEngine {
         }
 
         if diff > 0.0 {
-            self.open_yes_rebalance = None;
+            self.open_yes_order = None;
 
             let mut count = 0.0;
             let mut total_cost = 0.0;
@@ -262,12 +231,12 @@ impl BacktestEngine {
                 count += take;
             }
 
-            self.open_no_rebalance = Some(OpenOrder {
-                price: round_to_nearest_cent(REBALANCE_SUM - total_cost / diff),
+            self.open_no_order = Some(OpenOrder {
+                price: round_to_nearest_cent(MAX_BID_SUM - total_cost / diff),
                 contracts: diff,
             });
         } else {
-            self.open_no_rebalance = None;
+            self.open_no_order = None;
 
             let mut count = 0.0;
             let mut total_cost = 0.0;
@@ -281,8 +250,8 @@ impl BacktestEngine {
                 count += take;
             }
 
-            self.open_yes_rebalance = Some(OpenOrder {
-                price: round_to_nearest_cent(REBALANCE_SUM - total_cost / diff.abs()),
+            self.open_yes_order = Some(OpenOrder {
+                price: round_to_nearest_cent(MAX_BID_SUM - total_cost / diff.abs()),
                 contracts: diff.abs(),
             });
         }
@@ -298,78 +267,20 @@ impl BacktestEngine {
     }
 
     pub fn process_tick(&mut self, tick: &MarketDataRow) {
-        if self.market_reached_99_yes.is_none() {
-            if tick.yes_ask >= 0.99 && tick.yes_bid >= 0.98 {
-                self.market_reached_99_yes = Some(tick.timestamp);
-                info!("Market YES reached 99 at timestamp: {}", tick.timestamp);
-            }
-        } else {
-            if tick.yes_ask <= 0.98 && tick.yes_ask > 0.0 {
-                if self.market_yes_reversed_min_ask.is_none() {
-                    self.market_yes_reversed_min_ask = Some(tick.yes_ask);
-                }
-                if tick.yes_ask < self.market_yes_reversed_min_ask.unwrap_or(0.0) {
-                    self.market_yes_reversed_min_ask = Some(tick.yes_ask);
-                }
-            }
-            if tick.yes_bid <= 0.98 && tick.yes_bid > 0.0 {
-                if self.market_yes_reversed_min_bid.is_none() {
-                    self.market_yes_reversed_min_bid = Some(tick.yes_bid);
-                }
-                if tick.yes_bid < self.market_yes_reversed_min_bid.unwrap_or(0.0) {
-                    self.market_yes_reversed_min_bid = Some(tick.yes_bid);
-                }
-            }
-        }
-
-        if self.market_reached_99_no.is_none() {
-            if tick.no_ask >= 0.99 && tick.no_bid >= 0.98 {
-                self.market_reached_99_no = Some(tick.timestamp);
-                info!("Market NO reached 99 at timestamp: {}", tick.timestamp);
-            }
-        } else {
-            if tick.no_ask <= 0.98 && tick.no_ask > 0.0 {
-                if self.market_no_reversed_min_ask.is_none() {
-                    self.market_no_reversed_min_ask = Some(tick.no_ask);
-                }
-                if tick.no_ask < self.market_no_reversed_min_ask.unwrap_or(0.0) {
-                    self.market_no_reversed_min_ask = Some(tick.no_ask);
-                }
-            }
-            if tick.no_bid <= 0.98 && tick.no_bid > 0.0 {
-                if self.market_no_reversed_min_bid.is_none() {
-                    self.market_no_reversed_min_bid = Some(tick.no_bid);
-                }
-                if tick.no_bid < self.market_no_reversed_min_bid.unwrap_or(0.0) {
-                    self.market_no_reversed_min_bid = Some(tick.no_bid);
-                }
-            }
-        }
-        // self.handle_ladders(tick.yes_ask, tick.no_ask);
-        // self.handle_orders(tick.yes_ask, tick.no_ask, tick.timestamp);
-        // // self.rebalance();
+        self.check_fills(tick.yes_bid, tick.no_bid, tick.timestamp);
+        self.place_orders(tick.yes_bid, tick.no_bid);
         self.set_last_asks(tick.yes_ask, tick.no_ask);
     }
 
     pub fn reset(&mut self) {
         self.balance = INITIAL_WALLET_BALANCE;
-        self.yes_ladder_anchor_price = None;
-        self.no_ladder_anchor_price = None;
-        self.yes_ladder = Vec::new();
-        self.no_ladder = Vec::new();
+        self.open_yes_order = None;
+        self.open_no_order = None;
         self.filled_yes_orders = Vec::new();
         self.filled_no_orders = Vec::new();
         self.last_no_ask = None;
         self.last_yes_ask = None;
-        self.open_yes_rebalance = None;
-        self.open_no_rebalance = None;
         self.market_end = None;
-        self.market_reached_99_yes = None;
-        self.market_reached_99_no = None;
-        self.market_yes_reversed_min_ask = None;
-        self.market_yes_reversed_min_bid = None;
-        self.market_no_reversed_min_ask = None;
-        self.market_no_reversed_min_bid = None;
     }
 
     pub fn filled_yes_contracts(&self) -> f64 {
@@ -380,45 +291,45 @@ impl BacktestEngine {
         self.filled_no_orders.iter().map(|o| o.contracts).sum()
     }
 
-    // pub fn log_results(&self) {
-    //     // info!("Asset: {:?}", self.asset);
-    //     // info!("Balance remaining: {}", self.balance);
+    pub fn log_results(&self) {
+        let total_yes = self.filled_yes_contracts();
+        let total_no = self.filled_no_contracts();
+        let avg_yes = self.calculate_avg_yes_price().unwrap_or(0.0);
+        let avg_no = self.calculate_avg_no_price().unwrap_or(0.0);
+        let avg_sum = round_to_nearest_cent(avg_yes + avg_no);
+        let imbalance = self.get_contract_diff();
 
-    //     // let mut all_orders: Vec<&FilledOrder> = self.filled_yes_orders.iter()
-    //     //     .chain(self.filled_no_orders.iter())
-    //     //     .collect();
+        info!("--- Results ---");
+        info!("Balance remaining: ${:.2}", self.balance);
+        info!("YES fills: {:.1} contracts @ avg ${:.2}", total_yes, avg_yes);
+        for order in self.filled_yes_orders.iter() {
+            info!("  - {:.1} contracts @ ${:.2} at {}", order.contracts, order.price, order.timestamp);
+        }
+        info!("NO  fills: {:.1} contracts @ avg ${:.2}", total_no, avg_no);
+        for order in self.filled_no_orders.iter() {
+            info!("  - {:.1} contracts @ ${:.2} at {}", order.contracts, order.price, order.timestamp);
+        }
+        info!("Avg sum: ${:.2} ({})", avg_sum, if avg_sum < 1.0 { "profitable" } else { "underwater" });
+        info!("Imbalance: {:.1} contracts ({})", imbalance.abs(),
+            if imbalance > 0.0 { "YES heavy" } else if imbalance < 0.0 { "NO heavy" } else { "balanced" });
 
-    //     // all_orders.sort_by_key(|o| o.timestamp);
+        let matched = total_yes.min(total_no);
+        let spread_pnl = matched * (1.0 - avg_sum);
+        info!("Matched pairs: {:.1} → spread P&L: ${:.2}", matched, spread_pnl);
 
-    //     // for order in all_orders {
-    //     //     info!("{:?}", order);
-    //     // }
+        let residual = (total_yes - total_no).abs();
+        if residual > 0.0 {
+            let residual_side = if imbalance > 0.0 { "YES" } else { "NO" };
+            let residual_avg = if imbalance > 0.0 { avg_yes } else { avg_no };
+            info!("Residual: {:.1} {} contracts @ avg ${:.2} (need resolution)", residual, residual_side, residual_avg);
+        }
 
-    //     // info!("Filled yes orders total contracts: {}", self.filled_yes_orders.iter().map(|o| o.contracts).sum::<f64>());
-    //     // info!("Filled no orders total contracts: {}", self.filled_no_orders.iter().map(|o| o.contracts).sum::<f64>());
-
-    //     // let avg_yes = match self.calculate_avg_yes_price() {
-    //     //     Some(avg) => avg,
-    //     //     None => 0.0,
-    //     // };
-    //     // let avg_no = match self.calculate_avg_no_price() {
-    //     //     Some(avg) => avg,
-    //     //     None => 0.0,
-    //     // };
-
-    //     // let total_cost = avg_yes + avg_no;
-
-    //     // info!("Avg price yes: {}", avg_yes);
-    //     // info!("Avg price no: {}", avg_no);
-
-    //     // info!("Total cost: {}", total_cost);
-
-    //     // info!("Open yes rebalance: {:?}", self.open_yes_rebalance);
-    //     // info!("Open no rebalance: {:?}", self.open_no_rebalance);
-
-    //     info!("Last YES ask: {}", self.last_yes_ask.unwrap_or(0.0));
-    //     info!("Last NO ask: {}", self.last_no_ask.unwrap_or(0.0));
-    // }
+        info!("Total fills: {} YES + {} NO", self.filled_yes_orders.len(), self.filled_no_orders.len());
+        info!("Last YES ask: {}", self.last_yes_ask.unwrap_or(0.0));
+        info!("Last NO ask: {}", self.last_no_ask.unwrap_or(0.0));
+        info!("Open YES order: {:?}", self.open_yes_order);
+        info!("Open NO order: {:?}", self.open_no_order);
+    }
 
     pub fn append_result_to_csv(
         &self,
@@ -430,19 +341,24 @@ impl BacktestEngine {
         let total_no = self.filled_no_contracts();
         let avg_yes = self.calculate_avg_yes_price().unwrap_or(0.0);
         let avg_no = self.calculate_avg_no_price().unwrap_or(0.0);
-        let total_cost = round_to_nearest_cent(avg_yes + avg_no);
+        let avg_sum = round_to_nearest_cent(avg_yes + avg_no);
+        let matched = total_yes.min(total_no);
+        let spread_pnl = matched * (1.0 - avg_sum);
+        let imbalance = self.get_contract_diff();
 
-        let header = "ticker,total_rows_processed,market_reached_99_yes,market_reached_99_no,market_yes_reversed_min_ask,market_yes_reversed_min_bid,market_no_reversed_min_ask,market_no_reversed_min_bid,last_yes_ask,last_no_ask\n";
+        let header = "ticker,total_rows,yes_contracts,no_contracts,avg_yes,avg_no,avg_sum,matched,spread_pnl,imbalance,last_yes_ask,last_no_ask\n";
         let row = format!(
-            "{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{:.1},{:.1},{:.2},{:.2},{:.2},{:.1},{:.2},{:.1},{},{}\n",
             escape_csv_field(ticker),
             total_rows_processed,
-            self.market_reached_99_yes.map(|t| t.to_string()).unwrap_or_default(),
-            self.market_reached_99_no.map(|t| t.to_string()).unwrap_or_default(),
-            self.market_yes_reversed_min_ask.map(|t| t.to_string()).unwrap_or_default(),
-            self.market_yes_reversed_min_bid.map(|t| t.to_string()).unwrap_or_default(),
-            self.market_no_reversed_min_ask.map(|t| t.to_string()).unwrap_or_default(),
-            self.market_no_reversed_min_bid.map(|t| t.to_string()).unwrap_or_default(),
+            total_yes,
+            total_no,
+            avg_yes,
+            avg_no,
+            avg_sum,
+            matched,
+            spread_pnl,
+            imbalance,
             self.last_yes_ask.map(|t| t.to_string()).unwrap_or_default(),
             self.last_no_ask.map(|t| t.to_string()).unwrap_or_default(),
         );
@@ -478,7 +394,7 @@ impl BacktestEngine {
 
         let csv_path = "backtest_results.csv";
 
-        for ticker in tickers.iter() {
+        for ticker in tickers.iter().take(100) {
             let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
             info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
@@ -503,7 +419,7 @@ impl BacktestEngine {
                 .expect("append backtest result to CSV");
         }
 
-        // let csv_name = "5.csv";
+        // let csv_name = "3.csv";
         // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
         // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
 
