@@ -1,6 +1,6 @@
-use std::io::Write;
+use std::{fs::File, io::{BufRead, BufReader, Write}};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Timelike, Utc};
 use tracing::info;
 
 use crate::db::main::{Db, MarketDataRow};
@@ -46,9 +46,9 @@ pub struct BacktestEngine {
 
 const INITIAL_WALLET_BALANCE: f64 = 10000.0;
 const CONTRACTS_PER_ORDER: f64 = 2.0;
-const MAX_BID_SUM: f64 = 0.97;
+const MAX_BID_SUM: f64 = 0.98;
 const REQUOTE_THRESHOLD: f64 = 0.02;
-const MAX_IMBALANCE: f64 = 6.0;
+const MAX_IMBALANCE: f64 = 2.0;
 const MARKET_END_BUFFER_SECS: i64 = 240; // last 3 minutes of market data
 
 fn round_to_nearest_cent(price: f64) -> f64 {
@@ -207,54 +207,6 @@ impl BacktestEngine {
         let total_filled_no_contracts = self
             .filled_no_orders.iter().map(|o| o.contracts).sum::<f64>();
         total_filled_yes_contracts - total_filled_no_contracts
-    }
-
-    pub fn rebalance(&mut self) {
-        let diff = self.get_contract_diff();
-
-        if diff == 0.0 {
-            return;
-        }
-
-        if diff > 0.0 {
-            self.open_yes_order = None;
-
-            let mut count = 0.0;
-            let mut total_cost = 0.0;
-
-            for order in self.filled_yes_orders.iter().rev() {
-                let remaining = diff - count;
-                if remaining <= 0.0 { break; }
-                
-                let take = order.contracts.min(remaining);
-                total_cost += take * order.price;
-                count += take;
-            }
-
-            self.open_no_order = Some(OpenOrder {
-                price: round_to_nearest_cent(MAX_BID_SUM - total_cost / diff),
-                contracts: diff,
-            });
-        } else {
-            self.open_no_order = None;
-
-            let mut count = 0.0;
-            let mut total_cost = 0.0;
-
-            for order in self.filled_no_orders.iter().rev() {
-                let remaining = diff.abs() - count;
-                if remaining <= 0.0 { break; }
-                
-                let take = order.contracts.min(remaining);
-                total_cost += take * order.price;
-                count += take;
-            }
-
-            self.open_yes_order = Some(OpenOrder {
-                price: round_to_nearest_cent(MAX_BID_SUM - total_cost / diff.abs()),
-                contracts: diff.abs(),
-            });
-        }
     }
 
     pub fn set_last_asks(&mut self, yes_ask: f64, no_ask: f64) {
@@ -427,6 +379,35 @@ impl BacktestEngine {
                 .expect("append backtest result to CSV");
         }
 
+
+        // let csv_name = "3.csv";
+        // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
+        // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
+
+        // if market_data.is_empty() {
+        //     info!("No market data to process");
+        //     return;
+        // }
+
+        // // self.asset = market_data.first().map(|r| r.ticker.clone());
+        // // self.reset();
+
+        // let first_timestamp = market_data.first().map(|r| r.timestamp).unwrap();
+        // let boundary_minute = (first_timestamp.minute() / 15) * 15;
+        // let market_end = first_timestamp
+        //     .with_minute(boundary_minute).unwrap()
+        //     .with_second(0).unwrap()
+        //     .with_nanosecond(0).unwrap()
+        //     + Duration::minutes(15);
+        // self.market_end = Some(market_end);
+
+        // for tick in &market_data {
+        //     self.process_tick(tick);
+        // }
+
+        // self.log_results();
+
+
     }
 }
 
@@ -435,3 +416,52 @@ impl Default for BacktestEngine {
         Self::new()
     }
 }
+
+
+// fn load_market_data_from_csv(path: &str) -> Result<Vec<MarketDataRow>, Box<dyn std::error::Error>> {
+//     let file = File::open(path)?;
+//     let reader = BufReader::new(file);
+//     let mut rows = Vec::new();
+
+//     for (i, line) in reader.lines().enumerate() {
+//         let line = line?;
+//         if i == 0 {
+//             continue;
+//         }
+//         let parts: Vec<&str> = line.split(',').collect();
+//         if parts.len() < 6 {
+//             continue;
+//         }
+//         let timestamp = NaiveDateTime::parse_from_str(parts[0].trim(), "%Y-%m-%d %H:%M:%S")
+//             .map(|dt| Utc.from_utc_datetime(&dt))
+//             .map_err(|e| format!("parse timestamp {:?}: {}", parts[0], e))?;
+//         let ticker = parts[1].trim().to_string();
+//         let yes_ask: f64 = parts[2]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse yes_ask: {}", parts[2]))?;
+//         let yes_bid: f64 = parts[3]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse yes_bid: {}", parts[3]))?;
+//         let no_ask: f64 = parts[4]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse no_ask: {}", parts[4]))?;
+//         let no_bid: f64 = parts[5]
+//             .trim()
+//             .parse()
+//             .map_err(|_| format!("parse no_bid: {}", parts[5]))?;
+
+//         rows.push(MarketDataRow {
+//             timestamp,
+//             ticker,
+//             asset: String::new(),
+//             yes_ask,
+//             yes_bid,
+//             no_ask,
+//             no_bid,
+//         });
+//     }
+//     Ok(rows)
+// }
