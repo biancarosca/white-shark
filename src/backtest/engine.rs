@@ -46,9 +46,9 @@ pub struct BacktestEngine {
 
 const INITIAL_WALLET_BALANCE: f64 = 10000.0;
 const CONTRACTS_PER_ORDER: f64 = 2.0;
-const MAX_BID_SUM: f64 = 0.98;
+const MAX_BID_SUM: f64 = 0.97;
 const REQUOTE_THRESHOLD: f64 = 0.02;
-const MAX_IMBALANCE: f64 = 2.0;
+const MAX_IMBALANCE: f64 = 6.0;
 const MARKET_END_BUFFER_SECS: i64 = 240; // last 3 minutes of market data
 
 fn round_to_nearest_cent(price: f64) -> f64 {
@@ -269,6 +269,8 @@ impl BacktestEngine {
         for order in self.filled_no_orders.iter() {
             info!("  - {:.1} contracts @ ${:.2} at {}", order.contracts, order.price, order.timestamp);
         }
+        info!("Avg yes price: ${:.2}", avg_yes);
+        info!("Avg no price: ${:.2}", avg_no);
         info!("Avg sum: ${:.2} ({})", avg_sum, if avg_sum < 1.0 { "profitable" } else { "underwater" });
         info!("Imbalance: {:.1} contracts ({})", imbalance.abs(),
             if imbalance > 0.0 { "YES heavy" } else if imbalance < 0.0 { "NO heavy" } else { "balanced" });
@@ -354,7 +356,7 @@ impl BacktestEngine {
 
         let csv_path = "backtest_results.csv";
 
-        for ticker in tickers.iter().take(100) {
+        for ticker in tickers.iter() {
             let market_data = db.fetch_ticker_market_data(&ticker).await.unwrap();
             info!("Found {} market data for ticker: {}", market_data.len(), ticker);
 
@@ -380,7 +382,7 @@ impl BacktestEngine {
         }
 
 
-        // let csv_name = "3.csv";
+        // let csv_name = "4.csv";
         // let market_data = load_market_data_from_csv(csv_name).expect(&format!("failed to load {}", csv_name));
         // info!("Loaded {} rows from {}.csv", market_data.len(), csv_name);
 
