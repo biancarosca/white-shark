@@ -51,3 +51,10 @@ pub fn next_15min_interval() -> TokioInstant {
 
     TokioInstant::now() + Duration::from_secs(seconds_until_next_15min)
 }
+
+pub fn epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}

@@ -243,8 +243,28 @@ pub struct KalshiOrderbookSnapshot {
 pub struct KalshiOrderbookDelta {
     pub market_ticker: String,
     pub price_dollars: String,
+    #[serde(default, alias = "delta_fp", deserialize_with = "deserialize_delta")]
     pub delta: i64,
     pub side: String,
+}
+
+fn deserialize_delta<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    use serde::de;
+
+    struct DeltaVisitor;
+    impl<'de> de::Visitor<'de> for DeltaVisitor {
+        type Value = i64;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("an integer or numeric string")
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<i64, E> { Ok(v) }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<i64, E> { Ok(v as i64) }
+        fn visit_f64<E: de::Error>(self, v: f64) -> Result<i64, E> { Ok(v as i64) }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<i64, E> {
+            v.parse::<f64>().map(|f| f as i64).map_err(de::Error::custom)
+        }
+    }
+    deserializer.deserialize_any(DeltaVisitor)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -340,6 +360,7 @@ pub enum KalshiChannel {
     OrderbookDelta,
     Trade,
     MarketLifecycle,
+    Fill,
 }
 
 impl KalshiChannel {
@@ -349,7 +370,57 @@ impl KalshiChannel {
             KalshiChannel::OrderbookDelta => "orderbook_delta",
             KalshiChannel::Trade => "trade",
             KalshiChannel::MarketLifecycle => "market_lifecycle_v2",
+            KalshiChannel::Fill => "fill",
         }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct KalshiFill {
+    pub trade_id: String,
+    pub order_id: String,
+    pub market_ticker: String,
+    pub is_taker: bool,
+    pub side: String,
+    #[serde(default)]
+    pub yes_price: Option<i64>,
+    #[serde(default)]
+    pub yes_price_dollars: Option<String>,
+    #[serde(default)]
+    pub count: Option<i64>,
+    #[serde(default)]
+    pub count_fp: Option<String>,
+    #[serde(default)]
+    pub fee_cost: Option<String>,
+    pub action: String,
+    pub ts: i64,
+    #[serde(default)]
+    pub client_order_id: Option<String>,
+    #[serde(default)]
+    pub post_position: Option<i64>,
+    #[serde(default)]
+    pub post_position_fp: Option<String>,
+    #[serde(default)]
+    pub purchased_side: Option<String>,
+    #[serde(default)]
+    pub subaccount: Option<i64>,
+}
+
+impl KalshiFill {
+    fn parse_fp(s: &str) -> i64 {
+        s.parse::<f64>().map(|f| f as i64).unwrap_or(0)
+    }
+
+    pub fn get_count(&self) -> i64 {
+        self.count.unwrap_or_else(|| {
+            self.count_fp.as_deref().map(Self::parse_fp).unwrap_or(0)
+        })
+    }
+
+    pub fn get_post_position(&self) -> i64 {
+        self.post_position.unwrap_or_else(|| {
+            self.post_position_fp.as_deref().map(Self::parse_fp).unwrap_or(0)
+        })
     }
 }
 
@@ -382,6 +453,15 @@ impl KalshiMarketStatus {
 pub enum OrderSide {
     Yes,
     No,
+}
+
+impl OrderSide {
+    pub fn opposite(self) -> Self {
+        match self {
+            OrderSide::Yes => OrderSide::No,
+            OrderSide::No => OrderSide::Yes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,23 +550,40 @@ pub struct KalshiOrder {
     #[serde(rename = "type")]
     pub order_type: String,
     pub status: String,
-    pub yes_price: i64,
-    pub no_price: i64,
-    pub yes_price_dollars: String,
-    pub no_price_dollars: String,
-    pub fill_count: i64,
-    pub fill_count_fp: String,
-    pub remaining_count: i64,
-    pub remaining_count_fp: String,
-    pub initial_count: i64,
-    pub initial_count_fp: String,
-    pub taker_fees: i64,
-    pub maker_fees: i64,
-    pub taker_fill_cost: i64,
-    pub maker_fill_cost: i64,
-    pub taker_fill_cost_dollars: String,
-    pub maker_fill_cost_dollars: String,
-    pub queue_position: i64,
+    #[serde(default)]
+    pub yes_price: Option<i64>,
+    #[serde(default)]
+    pub no_price: Option<i64>,
+    #[serde(default)]
+    pub yes_price_dollars: Option<String>,
+    #[serde(default)]
+    pub no_price_dollars: Option<String>,
+    #[serde(default)]
+    pub fill_count: Option<i64>,
+    #[serde(default)]
+    pub fill_count_fp: Option<String>,
+    #[serde(default)]
+    pub remaining_count: Option<i64>,
+    #[serde(default)]
+    pub remaining_count_fp: Option<String>,
+    #[serde(default)]
+    pub initial_count: Option<i64>,
+    #[serde(default)]
+    pub initial_count_fp: Option<String>,
+    #[serde(default)]
+    pub taker_fees: Option<i64>,
+    #[serde(default)]
+    pub maker_fees: Option<i64>,
+    #[serde(default)]
+    pub taker_fill_cost: Option<i64>,
+    #[serde(default)]
+    pub maker_fill_cost: Option<i64>,
+    #[serde(default)]
+    pub taker_fill_cost_dollars: Option<String>,
+    #[serde(default)]
+    pub maker_fill_cost_dollars: Option<String>,
+    #[serde(default)]
+    pub queue_position: Option<i64>,
     #[serde(default)]
     pub taker_fees_dollars: Option<String>,
     #[serde(default)]
@@ -507,10 +604,58 @@ pub struct KalshiOrder {
     pub subaccount_number: Option<i64>,
 }
 
+impl KalshiOrder {
+    fn parse_fp(s: &str) -> i64 {
+        s.parse::<f64>().map(|f| f as i64).unwrap_or(0)
+    }
+
+    pub fn get_fill_count(&self) -> i64 {
+        self.fill_count.unwrap_or_else(|| {
+            self.fill_count_fp.as_deref().map(Self::parse_fp).unwrap_or(0)
+        })
+    }
+
+    pub fn get_remaining_count(&self) -> i64 {
+        self.remaining_count.unwrap_or_else(|| {
+            self.remaining_count_fp.as_deref().map(Self::parse_fp).unwrap_or(0)
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct GetOrdersResponse {
     pub orders: Vec<KalshiOrder>,
     pub cursor: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchCreateOrdersRequest {
+    pub orders: Vec<CreateOrderRequest>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchCreateOrdersResponse {
+    pub orders: Vec<BatchCreateOrderResult>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchCreateOrderResult {
+    #[serde(default)]
+    pub client_order_id: Option<String>,
+    #[serde(default)]
+    pub order: Option<KalshiOrder>,
+    #[serde(default)]
+    pub error: Option<BatchOrderError>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchOrderError {
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub details: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -531,11 +676,13 @@ pub struct KalshiBatchCancelOrdersResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct KalshiBatchCancelOrderResponse {
     pub order_id: String,
-    pub reduced_by: u64,
-    pub reduced_by_fp: String,
+    #[serde(default)]
+    pub reduced_by: Option<u64>,
+    #[serde(default)]
+    pub reduced_by_fp: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct TickUpdate {
     pub ticker: String,
     pub asset: String,

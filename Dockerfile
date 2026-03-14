@@ -16,7 +16,9 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/main.rs && \
     echo "pub fn dummy() {}" > src/lib.rs && \
-    echo "fn main() {}" > src/bin/backtest.rs
+    echo "fn main() {}" > src/bin/backtest.rs && \
+    echo "fn main() {}" > src/bin/export_csv.rs && \
+    echo "fn main() {}" > src/bin/fetch_activity.rs
 
 # Build dependencies (cached layer)
 RUN cargo build --release && rm -rf src

@@ -3,8 +3,8 @@ use tracing::{error, info, warn};
 
 use super::context::ClientContext;
 use super::models::{
-    KalshiMarketLifecycleMsg, KalshiMarketStatus, KalshiOrderbook, KalshiOrderbookDelta,
-    KalshiOrderbookSnapshot, KalshiWsMessage,
+    KalshiFill, KalshiMarketLifecycleMsg, KalshiMarketStatus, KalshiOrderbook,
+    KalshiOrderbookDelta, KalshiOrderbookSnapshot, KalshiWsMessage,
 };
 use crate::error::Result;
 
@@ -37,6 +37,7 @@ impl MessageHandler {
             Some("orderbook_snapshot") => Self::on_orderbook_snapshot(ctx, payload).await,
             Some("orderbook_delta") => Self::on_orderbook_delta(ctx, payload).await,
             Some("market_lifecycle_v2") => Self::on_market_lifecycle(ctx, payload).await,
+            Some("fill") => Self::on_fill(ctx, payload).await,
             _ => Ok(()),
         }
     }
@@ -157,6 +158,34 @@ impl MessageHandler {
 
         if new_status == KalshiMarketStatus::Closed || new_status == KalshiMarketStatus::Settled {
             Self::on_market_close(ctx, &msg, &series_ticker).await;
+        }
+
+        Ok(())
+    }
+
+    async fn on_fill(ctx: &mut ClientContext, payload: serde_json::Value) -> Result<()> {
+        let fill: KalshiFill = match serde_json::from_value(payload.clone()) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to parse fill: {}, payload: {:?}", e, payload);
+                return Ok(());
+            }
+        };
+
+        info!(
+            "💰 Fill: {} {} {} x{} @ {} (taker={}, pos={})",
+            fill.action, fill.side, fill.market_ticker,
+            fill.get_count(), fill.yes_price_dollars.as_deref().unwrap_or("?"), fill.is_taker, fill.get_post_position()
+        );
+
+        if let Some(series) = ctx.resolve_series_ticker(&fill.market_ticker) {
+            if let Some(trader) = ctx.traders.get(&series) {
+                if let Err(e) = trader.fill_tx.try_send(fill) {
+                    error!("Failed to queue fill to trader for {}: {}", series, e);
+                }
+            }
+        } else {
+            warn!("Fill for unknown series: {}", fill.market_ticker);
         }
 
         Ok(())

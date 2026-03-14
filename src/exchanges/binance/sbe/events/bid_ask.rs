@@ -57,6 +57,6 @@ impl<'a> BestBidAskStreamEvent<'a> {
 
     pub fn print_update(&self) {
         let last_price = (self.bid_price * self.ask_qty + self.ask_price * self.bid_qty) / (self.bid_qty + self.ask_qty);
-        info!("⚖️ bid = {}, ask = {}, last_price = {:.3}\n at event time: {}, now time: {}", self.bid_price, self.ask_price, last_price, self.event_time, Utc::now());
+        //info!("⚖️ bid = {}, ask = {}, last_price = {:.3}\n at event time: {}, now time: {}", self.bid_price, self.ask_price, last_price, self.event_time, Utc::now());
     }
 }

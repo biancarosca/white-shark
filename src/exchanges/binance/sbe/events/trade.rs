@@ -95,6 +95,6 @@ impl<'a> TradeStreamEvent<'a> {
 
     pub fn print_update(&self) {
         let last_price = self.last_trade.as_ref().map(|t| t.price).unwrap_or(0.0);
-        info!("⚡ price = {}\n at event time: {}, now time: {}", last_price, self.event_time, Utc::now());
+        //info!("⚡ price = {}\n at event time: {}, now time: {}", last_price, self.event_time, Utc::now());
     }
 }

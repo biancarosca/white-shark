@@ -161,6 +161,8 @@ impl BacktestEngine {
             (!yes_at_cap, !no_at_cap)
         };
 
+        // TOOD: here i should place an order equal to the imbalance, not contracts per order
+
         if quote_yes {
             let pair_ok = match last_no {
                 Some(np) if imbalance < 0.0 => yes_bid + np <= MAX_BID_SUM,

@@ -147,6 +147,10 @@ impl KalshiWebSocket {
             .await
     }
 
+    pub async fn subscribe_fills(&mut self) -> Result<()> {
+        self.subscribe(&[KalshiChannel::Fill], None).await
+    }
+
     pub async fn recv_raw(&mut self) -> Result<Option<Message>> {
         let stream = self
             .stream

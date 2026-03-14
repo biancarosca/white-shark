@@ -11,13 +11,10 @@ pub async fn run(config: Config) -> Result<()> {
     info!("🦈 Started");
     info!("================================");
 
-    let db = Arc::new(Db::new(&config.database.url).await?);
-
-    info!("Kalshi symbols: {:?}", config.kalshi.tracked_symbols);
+    let _db = Arc::new(Db::new(&config.database.url).await?);
 
     let kalshi_config = config.kalshi.clone();
-    let mut kalshi_client = KalshiClient::new(kalshi_config, db)?;
-
+    let mut kalshi_client = KalshiClient::new(kalshi_config, _db.clone())?;
     if let Err(e) = kalshi_client.start().await {
         error!("Kalshi client error: {}", e);
     }

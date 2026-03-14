@@ -137,26 +137,36 @@ impl<'a> DepthSnapshotStreamEvent<'a> {
         let imbalance_top_10 = top_10_bids_total_qty / top_10_asks_total_qty;
         let imbalance_all = all_bids_total_qty / all_asks_total_qty;
 
-        info!(
-            "📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
-            top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5, self.event_time, Utc::now()
-        );
-        info!(
-            "📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
-            top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10, self.event_time, Utc::now()
-        );
-        info!(
-            "📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
-            all_bids_total_qty, all_asks_total_qty, imbalance_all, self.event_time, Utc::now()
-        );
-        if imbalance_top_5 > 100.0 {
-            info!("ALERT: N_5: imbalance\n");
-        }
-        if imbalance_top_10 > 100.0 {
-            info!("ALERT: N_10: imbalance\n");
-        }
-        if imbalance_all > 100.0 {
-            info!("ALERT: All: imbalance\n");
-        }
+        // info!(
+        //     "📕 N_5: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
+        //     top_5_bids_total_qty, top_5_asks_total_qty, imbalance_top_5, self.event_time, Utc::now()
+        // );
+        // info!(
+        //     "📘 N_10: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
+        //     top_10_bids_total_qty, top_10_asks_total_qty, imbalance_top_10, self.event_time, Utc::now()
+        // );
+        // info!(
+        //     "📙 All: bids = {:.2}, asks = {:.2}, ratio = {:.3} at event time: {}, now time: {}",
+        //     all_bids_total_qty, all_asks_total_qty, imbalance_all, self.event_time, Utc::now()
+        // );
+        // if imbalance_top_5 > 100.0 {
+        //     info!("ALERT: N_5: imbalance POS{:.3}\n", imbalance_top_5);
+        // }
+        // if imbalance_top_10 > 100.0 {
+        //     info!("ALERT: N_10: imbalance POS{:.3}\n", imbalance_top_10);
+        // }
+        // if imbalance_all > 100.0 {
+        //     info!("ALERT: All: imbalance POS{:.3}\n", imbalance_all);
+        // }
+
+        // if imbalance_top_5 < 0.01 {
+        //     info!("ALERT: N_5: imbalance NEG{:.3}\n", imbalance_top_5);
+        // }
+        // if imbalance_top_10 < 0.01 {
+        //     info!("ALERT: N_10: imbalance NEG{:.3}\n", imbalance_top_10);
+        // }
+        // if imbalance_all < 0.01 {
+        //     info!("ALERT: All: imbalance NEG{:.3}\n", imbalance_all);
+        // }
     }
 }

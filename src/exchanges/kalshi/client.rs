@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, Mutex};
-use tokio::time::{sleep_until, Instant};
+use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::time::sleep_until;
 use tracing::{error, info, warn};
 
 use super::api::KalshiApi;
 use super::auth::KalshiAuth;
-use super::context::ClientContext;
+use super::context::{ClientContext, TraderChannels};
 use super::handler::MessageHandler;
 use super::market_data::MarketDataWriter;
 use super::models::KalshiWsMessage;
@@ -23,6 +25,7 @@ use crate::constants::KALSHI_WS_URL;
 use crate::db::main::Db;
 use crate::error::{Error, Result};
 use crate::exchanges::kalshi::constants::*;
+use crate::exchanges::kalshi::utils::epoch_ms;
 use crate::state::KalshiState;
 use crate::trader::main::Trader;
 
@@ -43,8 +46,14 @@ impl KalshiClient {
         }
 
         let market_data_tx = MarketDataWriter::spawn(db.clone());
-        let trading_tx = Trader::spawn(api.clone());
-        let ctx = ClientContext::new(config.tracked_symbols, db, market_data_tx, trading_tx);
+
+        let mut traders = HashMap::new();
+        for series in &config.tracked_symbols {
+            let (tick_tx, fill_tx) = Trader::spawn(api.clone(), series.clone());
+            traders.insert(series.clone(), TraderChannels { tick_tx, fill_tx });
+        }
+
+        let ctx = ClientContext::new(config.tracked_symbols, db, market_data_tx, traders);
 
         Ok(Self { auth, api, ws: None, ctx })
     }
@@ -113,6 +122,7 @@ impl KalshiClient {
         if let Err(e) = self.connect().await {
             return (Err(e), false);
         }
+        self.ctx.subscription_ids.clear();
         info!("🔗 WebSocket connected");
 
         let ws = match &self.ws {
@@ -163,8 +173,24 @@ impl KalshiClient {
         let mut received_messages = false;
         let mut fetch_deadline = next_15min_interval();
         let maintenance_deadline = next_maintenance_start();
-        let mut last_message_at = Instant::now();
-        let mut idle_deadline = last_message_at + Duration::from_secs(WS_IDLE_RECONNECT_SECS);
+
+        let last_msg_ms = Arc::new(AtomicI64::new(epoch_ms()));
+        let (idle_tx, mut idle_rx) = oneshot::channel::<()>();
+        let watchdog_ms = last_msg_ms.clone();
+        let idle_watchdog = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let elapsed_ms = epoch_ms() - watchdog_ms.load(Ordering::Relaxed);
+                if elapsed_ms >= (WS_IDLE_RECONNECT_SECS as i64 * 1000) {
+                    warn!(
+                        "No WebSocket message received for {}s, reconnecting (stale connection)",
+                        WS_IDLE_RECONNECT_SECS
+                    );
+                    let _ = idle_tx.send(());
+                    break;
+                }
+            }
+        });
 
         loop {
             tokio::select! {
@@ -172,8 +198,7 @@ impl KalshiClient {
                     match maybe_msg {
                         Some(msg) => {
                             received_messages = true;
-                            last_message_at = Instant::now();
-                            idle_deadline = last_message_at + Duration::from_secs(WS_IDLE_RECONNECT_SECS);
+                            last_msg_ms.store(epoch_ms(), Ordering::Relaxed);
                             if let Err(e) = MessageHandler::handle(&mut self.ctx, msg).await {
                                 error!("Error handling message: {}", e);
                             }
@@ -194,18 +219,16 @@ impl KalshiClient {
                     info!("🛑 Approaching maintenance window, disconnecting...");
                     break;
                 }
-                _ = sleep_until(idle_deadline) => {
-                    warn!(
-                        "No WebSocket message received for {}s, reconnecting (stale connection)",
-                        WS_IDLE_RECONNECT_SECS
-                    );
+                _ = &mut idle_rx => {
                     break;
                 }
             }
         }
 
         ws_handle.abort();
+        idle_watchdog.abort();
         let _ = ws_handle.await;
+        let _ = idle_watchdog.await;
         (Err(Error::WebSocket("Connection lost".into())), received_messages)
     }
 }

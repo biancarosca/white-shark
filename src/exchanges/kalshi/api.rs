@@ -5,8 +5,9 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 
 use super::auth::KalshiAuth;
 use super::models::{
-    CreateOrderRequest, CreateOrderResponse, GetOrdersResponse, KalshiMarket,
-    KalshiOrder, MarketsResponse, OrderAction, OrderSide,
+    BatchCreateOrdersRequest, BatchCreateOrdersResponse, CreateOrderRequest,
+    CreateOrderResponse, GetOrdersResponse, KalshiMarket, KalshiOrder, MarketsResponse,
+    OrderAction, OrderSide,
 };
 use crate::error::{Error, Result};
 use crate::constants::KALSHI_REST_URL;
@@ -265,6 +266,42 @@ impl KalshiApi {
         }
 
         Ok(all_orders)
+    }
+
+    pub async fn batch_create_orders(
+        &self,
+        orders: Vec<CreateOrderRequest>,
+    ) -> Result<BatchCreateOrdersResponse> {
+        let url_path = "/trade-api/v2/portfolio/orders/batched";
+        let url = format!("{}{}", KALSHI_REST_URL, url_path);
+
+        let auth_headers = self.auth_headers("POST", url_path)?;
+
+        let request = BatchCreateOrdersRequest { orders };
+
+        info!("Batch creating {} orders", request.orders.len());
+
+        let resp = self
+            .http
+            .post(&url)
+            .headers(auth_headers)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Error::Http(format!("HTTP {}: {}", status, body)));
+        }
+
+        let data: BatchCreateOrdersResponse = resp
+            .json()
+            .await
+            .map_err(|e| Error::Http(e.to_string()))?;
+
+        Ok(data)
     }
 
     pub async fn batch_cancel_orders(

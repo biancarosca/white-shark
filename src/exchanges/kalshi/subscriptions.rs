@@ -38,6 +38,11 @@ impl SubscriptionManager {
             ws_guard.subscribe_market_lifecycle().await?;
         }
 
+        if !ctx.subscription_ids.contains_key("fill") {
+            info!("📡 Subscribing to user fills");
+            ws_guard.subscribe_fills().await?;
+        }
+
         Ok(())
     }
 
